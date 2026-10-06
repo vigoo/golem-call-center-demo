@@ -1,0 +1,388 @@
+# Call Center Agent Development Plan
+
+## Goal
+
+Build a first, measurable version of the direct speech-to-text → language model →
+text-to-speech call agent described as Option 1 in the design discussion. The application will
+run on Golem using the Effect Golem SDK, Effect AI, Deepgram Flux, OpenAI Responses, and
+ElevenLabs streaming TTS. A browser console served by the same Golem application will exercise
+the complete pipeline.
+
+This project also serves as an acceptance test for Golem 1.6. When work exposes a Golem defect or
+release gap, it will be checked against and then reported to the
+[Golem 1.6 finalization](https://linear.app/golem-cloud/project/golem-16-finalization-a019d2a034f9)
+Linear project (`P-GOL-22`).
+
+## First-version boundaries
+
+### Included
+
+- One durable `CallAgent(callId)` per call.
+- A full-duplex Durable Streams method carrying browser input and agent output.
+- Deepgram Flux `/v2/listen` over a Golem WebSocket.
+- Committed-turn generation through Effect AI and OpenAI Responses streaming.
+- ElevenLabs multi-context streaming TTS over one long-lived WebSocket.
+- Explicit response IDs, turn IDs, audio sequence numbers, and playback acknowledgements.
+- Barge-in from Deepgram `StartOfTurn` and an explicit browser interrupt action.
+- Bounded queues and structured cleanup for all concurrent stages.
+- Persistence of committed conversation state and playback progress.
+- A same-origin browser console hosted by an ephemeral Golem HTTP router.
+- Protocol, state-machine, provider-adapter, integration, and browser tests.
+- Local deployment instructions and latency/failure diagnostics.
+
+### Deferred
+
+- Speculative generation from `EagerEndOfTurn`.
+- Transparent restoration of live provider WebSocket sessions.
+- Byte-identical continuation of interrupted synthesis.
+- Server-side transcoding, resampling, echo cancellation, or other DSP.
+- Twilio or another telephony gateway.
+- Production authentication, retention policy, and privacy controls.
+- Production load guarantees.
+
+## Architecture
+
+```text
+Browser console (served by Golem)
+  ├─ microphone → PCM16/16 kHz/mono → Durable input stream
+  ├─ control events: interrupt, playback acknowledgement, hangup
+  └─ Durable output stream → transcript/events + PCM playback
+                         │
+                         ▼
+                 CallAgent(callId)
+  ┌───────────────────────────────────────────────────────────┐
+  │ input consumer ──binary audio──▶ Deepgram Flux           │
+  │                                │                          │
+  │                       Update / StartOfTurn / EndOfTurn     │
+  │                                │                          │
+  │                                ▼                          │
+  │                         turn controller                   │
+  │                                │ committed transcript      │
+  │                                ▼                          │
+  │              Effect AI LanguageModel.streamText           │
+  │                                │ text deltas               │
+  │                                ▼                          │
+  │              ElevenLabs multi-context WebSocket           │
+  │                                │ audio chunks              │
+  │                                ▼                          │
+  │                         output producer                   │
+  └───────────────────────────────────────────────────────────┘
+```
+
+The Golem HTTP deployment will expose:
+
+- `/` and `/assets/*` from a parameterless ephemeral `Web` router.
+- `/calls/{callId}/run` from the durable `CallAgent`.
+
+Keeping both on one deployment gives the browser same-origin access to Durable Streams without a
+CORS exception or a separate development server.
+
+## Core contracts and invariants
+
+### Input events
+
+- `audio(sequence, capturedAt, payload)`
+- `playbackAck(responseId, playedThrough)`
+- `interrupt`
+- `hangup`
+
+### Output events
+
+- `transcript(turnId, text, final)`
+- `audio(responseId, sequence, payload)`
+- `clearPlayback(responseId)`
+- `responseFinished(responseId)`
+- `failure(stage, reason, recoverable)`
+
+Schemas are the single source of truth for both the agent boundary and browser protocol. Unknown
+provider messages are decoded deliberately: future-compatible fields are tolerated, while malformed
+known messages fail with stage context.
+
+The implementation must preserve these invariants:
+
+1. Only an `EndOfTurn` transcript starts an LLM response in v1.
+2. `StartOfTurn` while speaking invalidates the active response immediately.
+3. At most one response generation is current for a call.
+4. Every queued or emitted audio chunk carries the response generation that produced it.
+5. Audio from an invalid generation is never emitted or played.
+6. Durable delivery is not treated as playback; only `playbackAck` advances heard progress.
+7. Every inter-stage queue is bounded. A slow reader produces explicit backpressure rather than
+   unbounded memory growth.
+8. Provider connections, fibers, queues, and stream readers are scoped and cleaned up on success,
+   failure, interruption, and hangup.
+9. Completed turns are persisted. An unfinished live turn or response is abandoned and restarted
+   with a new ID after failure; provider session continuity is never claimed.
+10. Secrets stay in Golem's redacted configuration and never enter logs, errors, snapshots, or
+    output events.
+
+## Provider choices
+
+### Deepgram Flux
+
+- Direct WebSocket connection to `/v2/listen`.
+- `flux-general-en` initially, configurable for multilingual use.
+- Raw `linear16`, 16 kHz, mono audio in approximately 80 ms chunks.
+- `Authorization: Token <secret>` supplied only at connection time.
+- `Update` is surfaced as a partial transcript.
+- `StartOfTurn` is the automatic barge-in signal.
+- `EndOfTurn` commits the user turn.
+- `EagerEndOfTurn` and `TurnResumed` are decoded but do not trigger generation in v1.
+
+### OpenAI through Effect AI
+
+- `effect@4.0.0` and exact-compatible `@effect/ai-openai@4.0.0`.
+- Imports from `effect/ai` and `effect/http`.
+- Provider-neutral application dependency on `LanguageModel`.
+- `LanguageModel.streamText` filtered to typed `text-delta` parts.
+- OpenAI Responses API model and system prompt supplied through typed configuration.
+
+### ElevenLabs
+
+- Direct multi-context WebSocket connection.
+- One long-lived socket per call and one context per response ID.
+- Incremental text deltas, with bounded phrase grouping only if measurements show that sending raw
+  deltas harms speech quality.
+- PCM output selected to avoid agent-side transcoding.
+- Interrupt closes the obsolete response context while retaining the socket.
+- Late messages are rejected by context/response ID even after context closure.
+
+## Browser console
+
+The frontend will be plain HTML, CSS, and JavaScript with no framework or bundler. Static assets
+will be provisioned read-only as Golem initial files and served by `HttpRouter.define("Web", ...)`.
+The router is parameterless and ephemeral; call state remains exclusively in `CallAgent`.
+
+The console will provide:
+
+- Call ID entry and Start, Interrupt, and Hang Up actions.
+- Microphone capture, client-side resampling, and PCM16 encoding.
+- Durable Streams session creation, sequenced appends, close, and live output reads.
+- Gap-free PCM playback through Web Audio with an explicitly bounded local queue.
+- Immediate local queue clearing on `clearPlayback`.
+- Playback acknowledgements based on audio actually completed, not merely downloaded or scheduled.
+- Partial/final transcript display and assistant response text.
+- A diagnostic event log with response IDs, sequence numbers, stage failures, and latency markers.
+
+The local `*.localhost` deployment is a secure context for microphone access. Cloud testing must
+use HTTPS.
+
+## Local SDK and dependencies
+
+The published Effect Golem SDK has a known issue, so the application dependency will point to the
+local checkout at `../../golem/sdks/effect`. Every `golem` command must also receive the CLI SDK
+override:
+
+```nu
+$env.GOLEM_EFFECT_GOLEM_PATH = "/Users/vigoo/projects/golem/golem/sdks/effect"
+golem build
+```
+
+Build and issue reports will record the Golem CLI version and local Golem repository commit. The
+SDK itself will not be modified from this application unless investigation proves that the fix
+belongs there; cross-repository changes require their own reviewable work.
+
+## Commit-by-commit implementation
+
+Each numbered step ends in a commit. A step is not committed until its stated checks pass, except
+when the commit intentionally captures a minimal failing reproduction for a Golem issue. Commit
+messages may be refined, but their scope remains as described.
+
+### Step 0 — Capture the generated baseline
+
+Commit the untouched generated Effect streaming application so later changes have a clean base.
+
+- Commit: `chore: capture generated call center scaffold`
+- Check: clean Git status after the commit.
+
+### Step 1 — Record the development plan
+
+Add this plan, including architecture, invariants, staged commits, verification, and issue handling.
+
+- Commit: `docs: add call center development plan`
+- Check: inspect the rendered Markdown and confirm links and commands.
+
+### Step 2 — Pin the local SDK and establish tests
+
+- Replace the published SDK dependency with the local `file:` dependency.
+- Add exact-compatible Effect testing and OpenAI provider dependencies.
+- Add the smallest repository-native test configuration and scripts.
+- Replace obsolete generated README configuration without yet changing runtime behavior.
+
+- Commit: `build: use local effect golem sdk`
+- Checks: dependency tree, TypeScript check, starter tests, and `golem build` with
+  `GOLEM_EFFECT_GOLEM_PATH`.
+
+### Step 3 — Define the call protocol and persistent state
+
+- Add Effect schemas for input/output events, IDs, provider stages, turns, and saved call state.
+- Add pure transition logic for response creation, interruption, playback acknowledgement, and
+  stale-generation rejection.
+- Test asymmetric IDs and sequence boundaries so plausible off-by-one and stale-response bugs fail.
+
+- Commit: `feat: define call protocol and state machine`
+- Checks: schema round trips and state-machine unit tests.
+
+### Step 4 — Implement the Deepgram Flux adapter
+
+- Add a focused Effect service around the Golem WebSocket API.
+- Build and validate the Flux URL and authentication header.
+- Send binary audio and control messages.
+- Decode connected, turn, warning, configuration, and fatal-error messages with Effect Schema.
+- Map provider events to typed transcript/turn events.
+
+- Commit: `feat: add deepgram flux streaming client`
+- Checks: adapter tests with a fake socket, malformed-message tests, interruption cleanup, and build.
+
+### Step 5 — Implement streaming LLM generation
+
+- Configure `OpenAiClient` and `OpenAiLanguageModel` using redacted and ordinary typed config.
+- Build prompts from committed conversation turns.
+- Expose only streamed text deltas and final completion to the coordinator.
+- Preserve typed AI failures until mapping them to the call protocol boundary.
+
+- Commit: `feat: stream responses through effect ai`
+- Checks: fake `LanguageModel` tests for context ordering, deltas, failure, and cancellation.
+
+### Step 6 — Implement the ElevenLabs adapter
+
+- Add a scoped multi-context WebSocket service.
+- Initialize response contexts, stream text, flush/finish, close interrupted contexts, and close the
+  socket cleanly.
+- Decode base64 provider audio immediately into bytes and reject output for closed contexts.
+
+- Commit: `feat: add elevenlabs streaming tts client`
+- Checks: fake socket tests for interleaved contexts, final messages, malformed base64, interruption,
+  stale audio, and resource cleanup.
+
+### Step 7 — Build the full-duplex call coordinator
+
+- Connect input consumption, STT receiving, turn handling, LLM generation, TTS input/output, and
+  output production under one structured scope.
+- Use bounded queues at every push boundary.
+- Implement automatic and explicit barge-in with one generation invalidation path.
+- Emit stage-specific recoverable failures without leaking credentials.
+
+- Commit: `feat: coordinate the full duplex call pipeline`
+- Checks: deterministic fake-provider scenarios for happy path, overlapping speech, slow output,
+  provider failure, hangup, and late audio.
+
+### Step 8 — Expose the durable CallAgent
+
+- Replace the generated `StreamingAgent` with `CallAgent(callId)`.
+- Expose `run` through input/output Durable Stream slots.
+- Save committed turns, counters, and playback progress with schema-driven snapshots.
+- Explicitly abandon active provider work on an observable connection failure or restarted run.
+- Update `golem.yaml` with typed config, secret defaults, and HTTP deployment wiring.
+
+- Commit: `feat: expose durable call agent streams`
+- Checks: typecheck, unit tests, `golem build`, generated metadata/OpenAPI inspection, and local stream
+  protocol smoke test.
+
+### Step 9 — Host the browser console from Golem
+
+- Register the ephemeral `Web` router.
+- Provision static HTML, JavaScript, and CSS as read-only initial files.
+- Serve `/` and `/assets/*` with correct MIME types from the same HTTP deployment.
+- Add the diagnostic UI shell before live microphone behavior.
+
+- Commit: `feat: host call console from golem`
+- Checks: build/deploy, HTTP status/content-type checks, browser render, accessibility/DOM checks, and
+  an inspected screenshot.
+
+### Step 10 — Add browser capture and Durable Streams transport
+
+- Capture microphone frames with an AudioWorklet where supported.
+- Resample to 16 kHz mono and encode PCM16 in the browser.
+- Create the invocation/session and append sequenced input events idempotently.
+- Follow output live with resumable offsets and reconnect-safe cursor handling.
+- Implement Start, Interrupt, and Hang Up actions.
+
+- Commit: `feat: stream browser microphone to call agent`
+- Checks: browser permission/error states, generated audio fixture input, retry of an uncertain append,
+  stream closure, and an inspected active-call UI.
+
+### Step 11 — Add playback and heard-position acknowledgements
+
+- Decode output audio and schedule bounded Web Audio playback.
+- Clear scheduled and queued audio on interruption.
+- Send acknowledgements only as audio completes.
+- Surface first-audio and interruption-to-silence timing.
+
+- Commit: `feat: play and acknowledge streamed responses`
+- Checks: ordered playback, stale-generation drop, queue bound, clear behavior, acknowledgement
+  boundaries, and an inspected interrupted-call UI.
+
+### Step 12 — Exercise recovery and document the prototype
+
+- Test disconnect/reconnect, slow readers, long calls, provider failures, and interruption during
+  STT, LLM, and TTS.
+- Verify and document the exact Golem 1.6 behavior observed for WebSocket replay and Durable Streams.
+- Replace the generated README with setup, secret provisioning, build/deploy, browser use, known
+  limitations, and measurement instructions.
+- Record remaining application work separately from Golem release issues.
+
+- Commit: `docs: document call center prototype and findings`
+- Checks: full test suite, local-SDK `golem build`, local deploy, browser end-to-end exercise, and
+  clean Git status.
+
+## Verification strategy
+
+### On every commit
+
+- Run the narrowest tests that distinguish the changed behavior from plausible wrong behavior.
+- Run TypeScript checking.
+- Run `golem build` with `GOLEM_EFFECT_GOLEM_PATH` whenever schemas, agent metadata, capabilities,
+  dependencies, or the manifest change.
+- Inspect the staged diff before committing and leave unrelated files untouched.
+
+### Before declaring the prototype complete
+
+- Run all unit and adapter tests.
+- Build and deploy against the local Golem SDK.
+- Exercise a real browser call with provider credentials.
+- Inspect the rendered default, active, interrupted, and failed UI states.
+- Measure end-of-turn to first audio and interruption to silence.
+- Test malformed provider messages, provider disconnects, a slow browser reader, cancellation, and
+  stale output.
+- Restart during STT, LLM, and TTS and document duplicate/missing behavior without overstating
+  recovery guarantees.
+
+Live-provider checks are conditional on credentials and network access. Mocked checks must not be
+reported as proof of provider compatibility.
+
+## Golem 1.6 issue workflow
+
+When a failure may belong to Golem rather than this application:
+
+1. Reduce it to the smallest deterministic reproduction and preserve complete logs and versions.
+2. Confirm the failing path actually uses the local SDK and current Golem CLI/runtime.
+3. Separate application misuse, provider behavior, and an SDK/runtime/CLI defect using source,
+   protocol evidence, and a focused test.
+4. Search all statuses in `P-GOL-22` using the capability, symptom, and affected layer. Read likely
+   matches rather than relying only on titles.
+5. If an issue exists, add the new reproduction/version evidence there instead of creating a
+   duplicate.
+6. If none exists, create an issue in `P-GOL-22` containing:
+   - concise expected and actual behavior;
+   - CLI/runtime and local Golem commit versions;
+   - minimal reproduction or repository commit;
+   - exact commands and sanitized logs;
+   - impact on the call-center acceptance test;
+   - suspected layer, clearly marked as a hypothesis until verified.
+7. Link the Linear issue from the relevant commit documentation or README findings.
+
+The user has authorized reporting discovered Golem 1.6 issues under this workflow. Secrets,
+customer audio, and provider credentials must never be attached to an issue.
+
+## Commit discipline
+
+- Do not combine numbered steps into one commit.
+- Do not begin the next step with a dirty worktree from the previous step.
+- Keep refactors separate from behavior changes when practical.
+- If a step reveals a prerequisite, add the smallest prerequisite commit and record why it was
+  inserted into this plan.
+- If a Golem defect blocks progress, first commit a minimal failing reproduction when useful, report
+  it through the workflow above, and then either apply a clearly documented local workaround or stop
+  at the blocked boundary.
+- Do not rewrite published history. These commits are intended to preserve the development narrative
+  for later review and writing.
