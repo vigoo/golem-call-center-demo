@@ -10,6 +10,15 @@ manifestVersion: 1.6.0
 
 app: call-center
 
+localServer:
+  routerAddr: 127.0.0.1
+  routerPort: 19881
+  customRequestPort: 19006
+  mcpPort: 19007
+  portsFile: .amp/in/local-golem/ports.json
+  dataDir: .amp/in/local-golem/data
+  systemMemoryOverride: 2GiB
+
 version:
   git:
     tagPattern: "v*"
@@ -18,6 +27,11 @@ version:
 
 environments:
   local:
+    server: local
+    version:
+      git:
+        allowDirty: true
+  integration:
     server: local
     version:
       git:
@@ -31,14 +45,58 @@ components:
     dir: ""
     templates: effect
 agents:
-  StreamingAgent:
-    config: {}
+  CallAgent:
+    config:
+      deepgram:
+        apiUrl: wss://api.deepgram.com/v2/listen
+        model: flux-general-en
+      openAi:
+        apiUrl: https://api.openai.com/v1
+        model: gpt-4o-mini
+        systemPrompt: >-
+          You are a helpful phone assistant. Reply concisely in natural spoken English.
+          Ask one question at a time. Do not use Markdown or claim to have performed actions.
+      elevenLabs:
+        apiUrl: wss://api.elevenlabs.io
+        voiceId: 21m00Tcm4TlvDq8ikWAM
+        modelId: eleven_flash_v2_5
+        outputFormat: pcm_16000
+        inactivityTimeoutSeconds: 180
+        stability: 0.5
+        similarityBoost: 0.75
+        speed: 1
+        chunkLengthSchedule: [120, 160, 250, 290]
+    presets:
+      mock:
+        config:
+          deepgram:
+            apiUrl: ws://127.0.0.1:19110/v2/listen
+          openAi:
+            apiUrl: http://127.0.0.1:19110/v1
+          elevenLabs:
+            apiUrl: ws://127.0.0.1:19110
 secretDefaults:
+  integration:
+    deepgram:
+      apiKey: mock-deepgram
+    openAi:
+      apiKey: mock-openai
+    elevenLabs:
+      apiKey: mock-elevenlabs
   local:
-    externalAuth: '{{ DURABLE_STREAM_TOKEN }}'
+    deepgram:
+      apiKey: '{{ DEEPGRAM_API_KEY }}'
+    openAi:
+      apiKey: '{{ OPENAI_API_KEY }}'
+    elevenLabs:
+      apiKey: '{{ ELEVENLABS_API_KEY }}'
 httpApi:
   deployments:
+    integration:
+    - subdomain: call-center-test
+      agents:
+        CallAgent: {}
     local:
     - subdomain: call-center
       agents:
-        StreamingAgent: {}
+        CallAgent: {}

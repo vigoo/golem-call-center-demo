@@ -1,1 +1,1 @@
-import "./streaming-agent.js";
+import "./call-agent.js";

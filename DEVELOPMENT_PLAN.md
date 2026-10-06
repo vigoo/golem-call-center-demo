@@ -390,3 +390,56 @@ customer audio, and provider credentials must never be attached to an issue.
   at the blocked boundary.
 - Do not rewrite published history. These commits are intended to preserve the development narrative
   for later review and writing.
+
+## Development checkpoint — 2026-10-06
+
+Steps 1–7 are committed. Step 7 passed 59 unit tests, typechecking, a local-SDK build,
+Oracle review, and a converged adversarial review. Its tests cover shutdown/backpressure races,
+persisted active-response abandonment, and partial provider-acquisition cleanup.
+
+Step 8 is implemented as a **blocked checkpoint**, not an accepted complete step. The isolated
+server uses management port 19881, HTTP port 19006, MCP port 19007, and data under
+`.amp/in/local-golem/data`. It has an integration deployment with dummy secrets and a `mock`
+agent preset pointing at local protocol fixtures on port 19110. Nothing was deployed to cloud.
+
+Observed on the deployed Wasm: session creation, WIT JSON input append, binary socket send,
+Deepgram receive, and transcript output succeed. Response work then traps in `current-context`
+with a missing span. Reported generically as
+[GOL-742](https://linear.app/golem-cloud/issue/GOL-742/effect-streaming-invocation-traps-in-current-context-with-a-missing).
+An Oracle-suggested native-tracer experiment avoided the trap but stalled after consuming input,
+so it was removed rather than retained as an unsupported workaround. The SDK checkout changed
+externally during testing; pin artifact provenance before further runtime investigation.
+
+The imported config-class build limitation already exists as
+[GOL-739](https://linear.app/golem-cloud/issue/GOL-739/effect-static-contract-extraction-cannot-resolve-an-imported).
+The application uses an exported `defineConfig` value as a local workaround.
+
+Reproduction (Nushell, two terminals; no live credentials required):
+
+```nu
+node test/provider-fixture.mjs
+```
+
+```nu
+with-env { GOLEM_EFFECT_GOLEM_PATH: ($env.HOME | path join projects/golem/golem/sdks/effect) } {
+  golem server run
+}
+```
+
+Once the ports file is present, another terminal:
+
+```nu
+with-env { GOLEM_EFFECT_GOLEM_PATH: ($env.HOME | path join projects/golem/golem/sdks/effect) } {
+  golem deploy -Y -E integration -P mock
+}
+node test/golem-smoke.mjs
+```
+
+The smoke test deliberately fails until the full response/hangup lifecycle works. Do not treat
+mocked STT/TTS as proof of provider compatibility. Deepgram and ElevenLabs credentials were not
+available, so live-provider testing remains pending.
+
+Before accepting Step 8: resolve the runtime blocker, rerun the complete smoke test, verify
+invocation completion and snapshots/restoration, and add cross-record snapshot consistency
+validation raised by Oracle (IDs/counters, response references, active status, and playback bounds).
+Steps 9–12 have not begun; continuing with a broken stream endpoint would mask the blocker.

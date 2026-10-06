@@ -1,7 +1,13 @@
 import { defineConfig } from "@golemcloud/effect-golem";
 import { Schema } from "effect";
 
-export class CallAgentConfig extends defineConfig("CallAgent.Config", {
+// Export a value until the static extractor supports imported config classes (GOL-739).
+export const CallAgentConfig = defineConfig("CallAgent.Config", {
+  deepgram: Schema.Struct({
+    apiKey: Schema.Redacted(Schema.String),
+    apiUrl: Schema.String,
+    model: Schema.Literals(["flux-general-en", "flux-general-multi"]),
+  }),
   openAi: Schema.Struct({
     apiKey: Schema.Redacted(Schema.String),
     apiUrl: Schema.String,
@@ -20,4 +26,4 @@ export class CallAgentConfig extends defineConfig("CallAgent.Config", {
     speed: Schema.Number,
     chunkLengthSchedule: Schema.Array(Schema.Number),
   }),
-}) {}
+});
