@@ -362,14 +362,18 @@ When a failure may belong to Golem rather than this application:
    matches rather than relying only on titles.
 5. If an issue exists, add the new reproduction/version evidence there instead of creating a
    duplicate.
-6. If none exists, create an issue in `P-GOL-22` containing:
+6. Phrase reports as general Golem feature requests or bug reports. Do not mention this call-center
+   project, its development narrative, or its acceptance-test role; describe the affected Golem
+   capability and impact in terms useful to any SDK or application user.
+7. If none exists, create an issue in `P-GOL-22` containing:
    - concise expected and actual behavior;
    - CLI/runtime and local Golem commit versions;
-   - minimal reproduction or repository commit;
+   - a standalone minimal reproduction or generally applicable code sample;
    - exact commands and sanitized logs;
-   - impact on the call-center acceptance test;
+   - general user and release impact;
    - suspected layer, clearly marked as a hypothesis until verified.
-7. Link the Linear issue from the relevant commit documentation or README findings.
+8. Link the Linear issue from the relevant commit documentation or README findings without adding
+   project-specific context back to the Linear report.
 
 The user has authorized reporting discovered Golem 1.6 issues under this workflow. Secrets,
 customer audio, and provider credentials must never be attached to an issue.
