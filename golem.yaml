@@ -1,0 +1,44 @@
+# Schema for IDEA:
+# $schema: https://schema.golem.cloud/app/golem/1.6.0-dev.9/golem.schema.json
+# Schema for vscode-yaml:
+# yaml-language-server: $schema=https://schema.golem.cloud/app/golem/1.6.0-dev.9/golem.schema.json
+
+# Field reference: https://learn.golem.cloud/app-manifest#field-reference
+# Creating HTTP APIs: https://learn.golem.cloud/invoke/making-custom-apis
+
+manifestVersion: 1.6.0
+
+app: call-center
+
+version:
+  git:
+    tagPattern: "v*"
+    hashFallback: true
+    staticFallback: "v0.0.0"
+
+environments:
+  local:
+    server: local
+    version:
+      git:
+        allowDirty: true
+  cloud:
+    server: cloud
+    deployment:
+      versionCheck: true
+components:
+  call-center:effect-main:
+    dir: ""
+    templates: effect
+agents:
+  StreamingAgent:
+    config: {}
+secretDefaults:
+  local:
+    externalAuth: '{{ DURABLE_STREAM_TOKEN }}'
+httpApi:
+  deployments:
+    local:
+    - subdomain: call-center
+      agents:
+        StreamingAgent: {}
