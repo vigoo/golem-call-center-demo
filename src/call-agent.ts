@@ -1,8 +1,8 @@
 import { defineAgent, Http, method, Snapshot, WitTypes } from "@golemcloud/effect-golem";
-import { Effect, Layer, Ref, Stream } from "effect";
+import { Effect, Layer, Ref, Schema, Stream } from "effect";
 import { CallAgentConfig } from "./call-agent-config.js";
 import { coordinateCall } from "./call-coordinator.js";
-import { CallId, CallInput, CallOutput, SavedCallState } from "./call-protocol.js";
+import { CallId, CallInput, CallOutput, SavedCallState, ValidatedCallState } from "./call-protocol.js";
 import { initialCallState } from "./call-state.js";
 import { DeepgramFlux } from "./deepgram-flux.js";
 import { DeepgramTransportLive } from "./deepgram-flux-live.js";
@@ -42,7 +42,10 @@ export const CallAgent = defineAgent({
   },
 }).implement({
   init: () => Ref.make(initialCallState()),
-  snapshot: Snapshot.ref<SavedCallState>(),
+  snapshot: Snapshot.strategy<Ref.Ref<SavedCallState>, SavedCallState>({
+    save: (state) => Ref.get(state).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ValidatedCallState))),
+    restore: (saved) => Schema.decodeUnknownEffect(ValidatedCallState)(saved).pipe(Effect.flatMap(Ref.make)),
+  }),
   methods: (state) => ({
     run: ({ input }) => Effect.gen(function* () {
       const initialState = yield* Ref.get(state);

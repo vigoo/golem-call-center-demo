@@ -4,8 +4,8 @@ import { setDefaultResultOrder } from "node:dns";
 
 setDefaultResultOrder("ipv4first");
 const origin = process.env.GOLEM_TEST_ORIGIN ?? "http://call-center-test.localhost:19006";
-const callId = `smoke-${randomUUID()}`;
-const base = `${origin}/calls/${callId}/run/invocations/session-1`;
+const callId = process.env.GOLEM_TEST_CALL_ID ?? `smoke-${randomUUID()}`;
+const base = `${origin}/calls/${callId}/run/invocations/${randomUUID()}`;
 const request = async (path, options = {}) => {
   const response = await fetch(base + path, {
     ...options,
@@ -27,6 +27,23 @@ const append = (events, close = false) => request("/streams/input", {
 });
 console.log(`Testing ${callId}`);
 await request("", { method: "PUT", body: "{}" });
+if (process.env.GOLEM_TEST_EXPECT_ENDED) {
+  const deadline = performance.now() + 15000;
+  let rejected = false;
+  while (performance.now() < deadline) {
+    const response = await request("/streams/output?offset=-1");
+    const events = await response.json();
+    if (events.length) {
+      assert.equal(events[0].failure?.reason, "Call has ended; start a new call ID");
+      rejected = true;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.ok(rejected, "Restored ended call did not reject a new run");
+  console.log("Passed: restored ended state rejects reuse");
+  process.exit(0);
+}
 await append([{ audio: { sequence: 0, capturedAt: 0, payload: "AAA=" } }]);
 let offset = "-1";
 const events = [];

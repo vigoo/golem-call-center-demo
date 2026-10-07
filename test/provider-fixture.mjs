@@ -10,9 +10,13 @@ const server = createServer(async (request, response) => {
   for await (const _ of request) { /* consume the request body */ }
   response.writeHead(200, { "content-type": "text/event-stream" });
   const send = (event) => response.write(`data: ${JSON.stringify(event)}\n\n`);
-  send({ type: "response.output_text.delta", item_id: "message-1", delta: "Hello from the fixture." });
-  send({ type: "response.completed", response: {
+  send({ type: "response.output_text.delta", item_id: "message-1", output_index: 0,
+    content_index: 0, sequence_number: 0, logprobs: [], delta: "Hello from the fixture." });
+  send({ type: "response.completed", sequence_number: 1, response: {
     id: "fixture-response", status: "completed", model: "fixture",
+    object: "response", created_at: 0, metadata: null, temperature: null, top_p: null,
+    tools: [], tool_choice: "none", error: null, output: [], instructions: null,
+    parallel_tool_calls: false,
     incomplete_details: null,
     usage: { input_tokens: 10, output_tokens: 6, total_tokens: 16,
       input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } },

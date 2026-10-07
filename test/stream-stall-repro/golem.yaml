@@ -1,0 +1,20 @@
+manifestVersion: 1.6.0
+app: stream-stall-repro
+localServer:
+  routerAddr: 127.0.0.1
+  routerPort: 19881
+  customRequestPort: 19006
+  mcpPort: 19007
+environments:
+  local:
+    server: local
+components:
+  repro:main:
+    dir: ""
+    templates: effect
+httpApi:
+  deployments:
+    local:
+    - subdomain: stream-stall-repro
+      agents:
+        StreamProbe: {}

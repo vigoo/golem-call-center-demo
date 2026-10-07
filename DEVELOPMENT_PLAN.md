@@ -443,3 +443,45 @@ Before accepting Step 8: resolve the runtime blocker, rerun the complete smoke t
 invocation completion and snapshots/restoration, and add cross-record snapshot consistency
 validation raised by Oracle (IDs/counters, response references, active status, and playback bounds).
 Steps 9–12 have not begun; continuing with a broken stream endpoint would mask the blocker.
+
+## Development checkpoint — 2026-10-07
+
+The GOL-742 missing-span fix is verified on CLI/server `v1.6.0-rc1-16-g17a2a589f8`
+and the local SDK checkout at the same Golem revision. A forced build was necessary to eliminate
+previously cached artifacts. No native-tracer workaround is installed.
+
+Step 8 now validates snapshot cross-record invariants on both save and restore, with positive
+reducer-produced lifecycle fixtures and negative corruption cases. The metadata schema stays
+structural: the static evaluator still rejects block-bodied `Schema.makeFilter` refinements.
+Additional evidence was added to the existing
+[GOL-736](https://linear.app/golem-cloud/issue/GOL-736/effect-static-contract-extraction-rejects-schemaispattern-regexp),
+not filed as a duplicate. The OpenAI SSE fixture was corrected to include required event fields;
+its earlier invalid response was an application test-fixture error, not a Golem defect.
+
+Verified on deployed Wasm with protocol fixtures: transcript, generated response audio, response
+completion, playback acknowledgement, hangup, output closure, invocation completion, and an
+automatic snapshot containing both committed turns and acknowledged playback. After restarting
+the isolated server without cleaning its data, the same ended agent recovered and rejected a
+new run. Its subsequent snapshot retained both turns, counters, and playback progress. These
+checks establish preserved-data recovery but do not independently distinguish the SDK snapshot
+restore path from oplog replay; directly observing that path remains an acceptance check.
+The smoke supports this check through `GOLEM_TEST_CALL_ID` and
+`GOLEM_TEST_EXPECT_ENDED`. All 61 unit tests and typechecking pass. Oracle reviewed the changes;
+the bounded adversarial review found no application bugs.
+
+The local memory override is now 4GiB. With 2GiB the combined server reported about 1.77GiB RSS
+at startup, exceeding its 1.60GiB worker-admission budget; that produced additional queued/Idle
+tests and obscured diagnosis. This configuration change is **not** a fix for the stream stall below.
+
+Step 8 remains a **blocked checkpoint** because live input delivery intermittently stalls even
+with 4GiB and RSS below 1GiB. Successful calls are not evidence that repeated calls are reliable.
+A reduced string-echo agent with two pending WebSocket receive fibers reproduced the stall on
+the second fresh invocation. The host records `ConsumerItemValue` but no guest input-handler
+marker or binary send follows. No missing-span trap, crash, replay, or explicit suspension is observed; the exact
+root cause is not established. After duplicate-checking the release project, reported generically as
+[GOL-750](https://linear.app/golem-cloud/issue/GOL-750/concurrent-websocket-receives-can-stall-live-durable-stream-input).
+The runnable reduced reproduction is in `test/stream-stall-repro/`.
+
+Steps 9–12 remain pending rather than hiding this failure behind a browser UI. Resume with repeated
+smoke/reduced-probe verification once GOL-750 is resolved. Live Deepgram/ElevenLabs credentials
+are still unavailable; protocol-fixture results do not establish live provider compatibility.

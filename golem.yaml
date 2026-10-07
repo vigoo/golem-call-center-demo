@@ -17,7 +17,7 @@ localServer:
   mcpPort: 19007
   portsFile: .amp/in/local-golem/ports.json
   dataDir: .amp/in/local-golem/data
-  systemMemoryOverride: 2GiB
+  systemMemoryOverride: 4GiB
 
 version:
   git:
