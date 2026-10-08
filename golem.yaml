@@ -33,6 +33,7 @@ environments:
         allowDirty: true
   integration:
     server: local
+    componentPresets: [mock]
     version:
       git:
         allowDirty: true
@@ -72,6 +73,8 @@ agents:
         speed: 1
         chunkLengthSchedule: [120, 160, 250, 290]
     presets:
+      live:
+        default: true
       mock:
         config:
           deepgram:

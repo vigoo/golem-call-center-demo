@@ -571,3 +571,16 @@ wire protocol, queue failure policy, proxy timings and release findings. Step 12
 **blocked acceptance checkpoint**, not a claim that crash recovery or live providers work.
 Resume by verifying GOL-799's fix with both reproductions and obtaining Deepgram/ElevenLabs
 credentials for live speech/latency checks. No SDK changes, cloud deploy, push or merge occurred.
+
+## Follow-up — distinguish live and mock presets
+
+A user test revealed that `local` still used fixture URLs even without `-P mock`. Deployed
+component metadata confirmed this. CLI source inspection established that the first custom agent
+preset is implicitly selected when none is specified; our lone `mock` preset was therefore the
+default. This was an application manifest mistake, not a Golem defect.
+
+Added an explicit empty `live` default and selected `mock` in the integration environment.
+README now uses `-P live` to override shell preset selection too, and warns that existing call
+agents retain their old configuration. Local CLI deployment plans verify all three live provider
+URLs without a preset, while `-P mock` retains all three fixture URLs. Unit tests and typecheck
+pass. No active agents are reset or deleted, and no live provider invocation is made by this fix.

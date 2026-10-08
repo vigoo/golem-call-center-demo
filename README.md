@@ -71,11 +71,16 @@ in `golem.yaml`, then:
 
 ```nu
 $env.GOLEM_EFFECT_GOLEM_PATH = ($env.HOME | path join projects/golem/golem/sdks/effect)
-golem deploy -Y -E local
+golem deploy -Y -E local -P live
 ```
 
 Open [the live-provider console](http://call-center.localhost:19006). Do **not** use `-P mock` for
-this deployment. Secret defaults seed missing values, not rotate existing values; use Golem's
+this deployment. `live` is the explicit default agent preset; `integration` selects `mock` through
+its environment configuration. Passing `-P live` also overrides a shell's `GOLEM_PRESET` setting.
+Golem implicitly selects the first custom preset if no default is marked, so a lone `mock` preset
+is not opt-in. After switching presets, use a fresh call ID: existing agents keep their deployed
+revision/configuration. Verify provider URLs with `golem component get -E local` before a call.
+Secret defaults seed missing values, not rotate existing values; use Golem's
 secret-management commands if credentials already exist. Nothing here requires cloud deployment.
 Use headphones to limit feedback. `*.localhost` is a browser secure context; remote hosting needs
 HTTPS and appropriate authentication before exposing transcripts or audio.
