@@ -638,7 +638,7 @@ hangup while scheduling is blocked. Measured scheduling stays below four seconds
 uses explicit control triggers after playback begins instead of timing-dependent failures.
 The ordinary microphone/retry/playback/interrupt/hangup browser regression also passes.
 
-## Next step — interactive architecture walkthrough
+## Follow-up — interactive architecture walkthrough (completed)
 
 Host a self-contained `/walkthrough` page through the existing ephemeral Web router. Keep the
 console's visual language; no extra frontend framework, provider calls or credentials required.
@@ -648,3 +648,22 @@ source paths, buffering/ACK semantics, interruption, retry/closure and the GOL-7
 Examples must be explicitly illustrative, not a live trace or a crash-recovery claim. Verify all
 steps and deep links in a browser, inspect desktop/mobile screenshots, obtain Oracle review,
 document the page and commit it separately. Redeploy the normal local app and leave it running.
+
+Implemented 23 navigable steps across five scenarios, eight selectable boundary inspectors,
+wire/protocol excerpts, ownership/source references and hash-based shareable step links.
+The static page needs no microphone, provider requests, credentials or additional frontend library.
+The console footer links to it; both local and integration Web deployments serve the same assets.
+
+Oracle found one factual documentation error: the coordinator cancels on StartOfTurn, not on
+TurnResumed. Corrected both views without changing coordinator behavior. It also corrected the
+selected-call-ID wording and completed-state restoration's test reference. Oracle's follow-up
+approved the walkthrough. Its known-limit views distinguish synthesis from hearing, invocation
+snapshots from per-frame persistence, scheduled bounds from total memory, and completed-call
+restoration from the blocked GOL-799 active replay path.
+
+The Golem-hosted Chrome test checks all 23 steps, boundary selection, invalid/prototype-key hashes,
+deep links, previous/next, keyboard/history, responsive mobile layout, CSP and no call requests.
+Desktop screenshots for every scenario and mobile screenshots were inspected, including the
+corrected Flux/barge-in views and the console link. All 76 unit tests and typecheck pass; ordinary
+console smoke and microphone/playback/ACK/interrupt/hangup regression tests also pass.
+The bounded walkthrough bug-finder review found no bugs. The deployed OpenAPI link returns 200.

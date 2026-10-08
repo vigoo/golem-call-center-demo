@@ -11,6 +11,17 @@ also tested against protocol fixtures using real Chrome playback and Golem strea
 latency remains unmeasured. This is an unauthenticated development prototype, not a production
 telephony service.
 
+## Interactive walkthrough
+
+Open [Inside the pipeline](http://call-center.localhost:19006/walkthrough) after local deployment,
+or `/walkthrough` on the integration hostname. The console footer links to it too.
+Five scenarios and 23 steps cover a spoken turn, paced playback, interruption, delivery/retry,
+and state/recovery. Select a boundary to inspect its ownership/source files, or use step links
+such as [`#buffering/2`](http://call-center.localhost:19006/walkthrough#buffering/2) to share a view.
+The walkthrough is a static interactive explanation with representative protocol excerpts—not
+live telemetry. It requires no microphone or provider credentials. Run `node test/browser-walkthrough.mjs`
+against the integration deployment to check navigation, examples, CSP, mobile layout and no call requests.
+
 ## Prerequisites and isolated server
 
 - Node.js 22.12 or newer, Golem CLI 1.6, and Google Chrome for browser tests.

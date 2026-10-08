@@ -34,4 +34,5 @@ button:focus-visible, input:focus-visible { outline: 2px solid #69dbbd; outline-
 .turn span { display: block; font-size: 11px; color: #93e4c9; margin-bottom: 6px; }
 .partial { color: #9daaba; font-style: italic; }
 footer { font-size: 12px; line-height: 1.7; margin-top: 26px; max-width: 850px; }
+footer a { color: #93e4c9; text-underline-offset: 4px; }
 @media (max-width: 680px) { main { padding: 28px 18px; } h1 { font-size: 30px; } .columns { grid-template-columns: 1fr; } .metrics { gap: 8px; } .metrics div { padding: 14px 10px; } .metrics strong { font-size: 18px; } .buttons { flex-wrap: wrap; } label .muted { display: block; margin: 5px 0; } input { font-size: 12px; } }

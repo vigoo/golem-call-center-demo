@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Inside the pipeline — Golem Voice Lab</title>
+  <link rel="stylesheet" href="/assets/console.css">
+  <link rel="stylesheet" href="/assets/walkthrough.css">
+  <script type="module" src="/assets/walkthrough.js"></script>
+</head>
+<body>
+  <main class="walkthrough">
+    <header><div><p class="eyebrow">GOLEM / VOICE LAB / UNDER THE HOOD</p><h1>Inside the pipeline</h1></div>
+      <a class="back-link" href="/">Open call console ↗</a></header>
+    <p class="intro">Follow a spoken turn across the browser, a durable agent, and three providers.<br>
+      Then explore what changes when speech arrives faster than playback—or a call is interrupted.</p>
+    <p class="simulation-note">INTERACTIVE EXPLANATION · Illustrative payloads, not a live trace. No microphone, credentials or provider calls.</p>
+    <noscript><p>This walkthrough needs JavaScript for step navigation. The README describes the protocols and limits.</p></noscript>
+    <nav id="scenarios" class="scenarios" aria-label="Walkthrough scenarios"></nav>
+    <section class="panel architecture" aria-labelledby="map-title">
+      <div class="section-heading"><h2 id="map-title">System boundaries</h2><span class="muted">Select a boundary to inspect it</span></div>
+      <div id="boundaries" class="boundaries"></div>
+      <p id="route" class="route" aria-label="Highlighted data path"></p>
+      <div class="inspector"><strong id="owner-title"></strong><p id="owner-detail"></p><code id="owner-source"></code></div>
+    </section>
+    <div class="walkthrough-body">
+      <nav class="panel step-nav" aria-label="Steps in this scenario"><h2 id="scenario-title"></h2><ol id="steps"></ol></nav>
+      <section class="panel step-detail" aria-labelledby="step-title">
+        <div class="section-heading"><span id="step-count" class="eyebrow"></span><span id="state" class="state"></span></div>
+        <h2 id="step-title" aria-live="polite"></h2>
+        <p id="description"></p>
+        <p id="invariant" class="invariant"></p>
+        <div class="payload-heading"><h3 id="protocol"></h3><span class="muted">Representative excerpt</span></div>
+        <pre id="payload" tabindex="0" aria-labelledby="protocol"></pre>
+        <p class="source-label">Implementation <code id="source"></code></p>
+        <div class="step-actions"><button id="previous" class="secondary">← Previous</button><button id="next">Next step →</button>
+          <button id="copy-link" class="secondary">Copy step link</button><span id="copy-status" role="status"></span></div>
+      </section>
+    </div>
+    <footer>Playback ACK means a whole original audio chunk completed naturally—not that it was downloaded or scheduled.<br>
+      This remains a development prototype. Active-call crash recovery is blocked by
+      <a href="https://linear.app/golem-cloud/issue/GOL-799/effect-duplex-agentstream-replay-stalls-after-simulate-crash-with">GOL-799</a>.
+      <a href="/openapi.yaml">View deployed OpenAPI</a>.</footer>
+  </main>
+</body>
+</html>

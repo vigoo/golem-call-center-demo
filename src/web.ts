@@ -9,6 +9,7 @@ HttpRouter.define("Web", {
   }),
   static: [
     { route: "/", path: "/web/index.html" },
+    { route: "/walkthrough", path: "/web/walkthrough.html" },
     { route: "/assets/*", path: "/web/assets/$1" },
   ],
 }).register();
