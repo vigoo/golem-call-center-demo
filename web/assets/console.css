@@ -26,6 +26,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid #69dbbd; outline-
 .metrics strong { font-size: 22px; font-weight: 550; }
 .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
 .columns .panel { min-height: 260px; }
+#transcripts { max-height: 320px; overflow: auto; }
 #events { padding: 0; margin: 0; list-style: none; font: 12px/1.65 ui-monospace, monospace; max-height: 320px; overflow: auto; }
 #events li { padding: 9px 0; border-bottom: 1px solid #2b3543; overflow-wrap: anywhere; }
 #events time { color: #69dbbd; margin-right: 10px; }
@@ -33,4 +34,4 @@ button:focus-visible, input:focus-visible { outline: 2px solid #69dbbd; outline-
 .turn span { display: block; font-size: 11px; color: #93e4c9; margin-bottom: 6px; }
 .partial { color: #9daaba; font-style: italic; }
 footer { font-size: 12px; line-height: 1.7; margin-top: 26px; max-width: 850px; }
-@media (max-width: 680px) { main { padding: 28px 18px; } h1 { font-size: 30px; } .columns { grid-template-columns: 1fr; } .metrics { gap: 8px; } .metrics div { padding: 14px 10px; } .metrics strong { font-size: 18px; } .buttons { flex-wrap: wrap; } label .muted { display: block; margin: 5px 0; } }
+@media (max-width: 680px) { main { padding: 28px 18px; } h1 { font-size: 30px; } .columns { grid-template-columns: 1fr; } .metrics { gap: 8px; } .metrics div { padding: 14px 10px; } .metrics strong { font-size: 18px; } .buttons { flex-wrap: wrap; } label .muted { display: block; margin: 5px 0; } input { font-size: 12px; } }

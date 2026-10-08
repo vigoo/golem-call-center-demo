@@ -27,11 +27,15 @@ const sockets = new WebSocketServer({ server });
 sockets.on("connection", (socket, request) => {
   const deepgram = request.url.startsWith("/v2/listen");
   let sequence = 0;
+  let lastTurn = 0;
   if (deepgram) socket.send(JSON.stringify({
     type: "Connected", request_id: "fixture", sequence_id: sequence++,
   }));
   socket.on("message", (bytes, binary) => {
     if (deepgram && binary) {
+      // A continuous microphone should not invent a new turn for every 80 ms frame.
+      if (Date.now() - lastTurn < 1000) return;
+      lastTurn = Date.now();
       socket.send(JSON.stringify({
         type: "TurnInfo", request_id: "fixture", sequence_id: sequence++,
         event: "EndOfTurn", turn_index: sequence, transcript: "Hello fixture",

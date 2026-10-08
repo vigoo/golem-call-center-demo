@@ -1,5 +1,6 @@
 import { CallTransport } from "./transport.js";
 import { toBase64 } from "./pcm.js";
+import { PcmPlayback } from "./playback.js";
 
 const $ = (id) => document.getElementById(id);
 $("call-id").value = crypto.randomUUID();
@@ -25,13 +26,13 @@ async function release(call) {
   if (call.disposed) return;
   call.disposed = true;
   if (current === call) { current = null; controls(false); }
-  stopCapture(call); call.transport?.dispose();
+  stopCapture(call); call.playback?.interrupt(); call.transport?.dispose();
   try { if (call.context?.state !== "closed") await call.context?.close(); }
   catch (error) { log(`Audio cleanup: ${error.message}`); }
 }
 async function fail(call, error) {
   if (call.disposed || call.failing || current !== call) return;
-  call.failing = true; stopCapture(call);
+  call.failing = true; stopCapture(call); call.playback?.interrupt();
   $("error").hidden = false;
   $("error").textContent = `Call stopped: ${error.message}. Start with a new call ID.`;
   log(`Failure: ${error.message}`); status("Failed", "Microphone stopped; session is being closed.");
@@ -44,16 +45,36 @@ async function fail(call, error) {
   await release(call);
 }
 function output(call, event) {
-  if (current !== call) return;
-  const [kind, value] = Object.entries(event)[0];
+  if (current !== call || call.failing) return;
+  const [kind, raw] = typeof event === "string" ? [event, {}] : Object.entries(event)[0];
+  const value = raw ?? {};
   if (kind === "transcript") {
     if (value.final) {
+      call.endOfTurn = performance.now();
       $("empty-transcript").hidden = true; $("partial").textContent = "";
       const turn = document.createElement("p"); turn.className = "turn";
       const label = document.createElement("span"); label.textContent = `You · ${value.turnId}`;
       turn.append(label, document.createTextNode(value.text)); $("transcripts").append(turn);
     } else $("partial").textContent = value.text;
   }
+  if (kind === "assistantText") {
+    const turn = document.createElement("p"); turn.className = "turn";
+    const label = document.createElement("span"); label.textContent = `Assistant · ${value.responseId}`;
+    turn.append(label, document.createTextNode(value.text)); $("transcripts").append(turn);
+  }
+  if (kind === "audio" && call.capturing && !call.failing && call.playback.push(value)) {
+    if (value.sequence === 0 && call.endOfTurn) $("first-audio").textContent = `${Math.round(performance.now() - call.endOfTurn)} ms`;
+    status("Speaking", "Assistant audio is playing; speak or Interrupt to barge in.");
+  }
+  if (kind === "clearPlayback") {
+    call.playback.clear(value.responseId);
+    if (call.capturing) status("Listening", "Playback cleared; microphone remains live.");
+  }
+  if (kind === "interruptConfirmed" && call.capturing) {
+    call.playback.confirmInterrupt(); $("interrupt").disabled = false; log("Agent confirmed interrupt");
+    status("Listening", "Agent confirmed interrupt; ready for your next turn.");
+  }
+  if (kind === "failure") log(`${value.stage}: ${value.reason} (${value.recoverable ? "recoverable" : "fatal"})`);
   log(`${kind}${value.responseId ? ` · ${value.responseId}` : ""}${kind === "audio" ? ` · chunk ${value.sequence}` : ""}`);
   if (kind === "failure" && !value.recoverable) throw new Error(`${value.stage}: ${value.reason}`);
 }
@@ -62,6 +83,8 @@ $("start").addEventListener("click", async () => {
   const id = $("call-id").value.trim();
   if (!id || current) return;
   const call = { capturing: false, sequence: 0 }; current = call;
+  $("transcripts").replaceChildren(); $("partial").textContent = ""; $("empty-transcript").hidden = false;
+  $("input-count").textContent = "0 frames"; $("first-audio").textContent = "—"; $("silence").textContent = "—";
   controls(true); $("error").hidden = true; status("Starting", "Requesting microphone permission…");
   try {
     call.media = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
@@ -72,6 +95,12 @@ $("start").addEventListener("click", async () => {
     if (call.disposed) return;
     call.transport = new CallTransport(id); await call.transport.create();
     if (call.disposed) return;
+    call.playback = new PcmPlayback(call.context, (responseId, playedThrough) => {
+      if (!call.capturing || call.disposed || call.failing) return;
+      log(`Played · ${responseId} · chunk ${playedThrough}`);
+      if (!call.playback.sources.size) status("Listening", "Playback completed; microphone remains live.");
+      call.transport.append([{ playbackAck: { responseId, playedThrough } }]).catch((error) => fail(call, error));
+    });
     call.read = call.transport.read((event) => output(call, event));
     call.read.then(async () => {
       if (current === call && !call.failing) { status("Ended", "Output stream closed. Use a new call ID."); await release(call); }
@@ -89,16 +118,20 @@ $("start").addEventListener("click", async () => {
       call.transport.append([{ audio: { sequence, capturedAt: Date.now(), payload: toBase64(data) } }])
         .catch((error) => fail(call, error));
     };
-    controls(true, true); status("Listening", "Microphone → PCM16 / 16 kHz / mono. Playback not connected yet."); log("Call stream connected");
+    controls(true, true); status("Listening", "Microphone → PCM16 / 16 kHz / mono. Waiting for your turn."); log("Call stream connected");
   } catch (error) { await fail(call, error); }
 });
 $("interrupt").addEventListener("click", () => {
   const call = current; if (!call?.capturing) return;
+  $("interrupt").disabled = true;
+  const started = performance.now(); call.playback.interrupt();
+  $("silence").textContent = `${(performance.now() - started).toFixed(1)} ms`;
+  status("Listening", "Playback stopped locally; waiting for agent interrupt confirmation.");
   call.transport.append(["interrupt"]).catch((error) => fail(call, error)); log("Interrupt requested");
 });
 $("hangup").addEventListener("click", async () => {
   const call = current; if (!call) return;
-  controls(true); stopCapture(call); status("Ending", "Closing input and waiting for output closure…");
+  controls(true); stopCapture(call); call.playback.interrupt(); status("Ending", "Closing input and waiting for output closure…");
   try {
     await call.transport.append(["hangup"], true);
     await Promise.race([call.read, new Promise((_, reject) => setTimeout(() => reject(new Error("Output closure timed out")), 15000))]);

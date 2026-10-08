@@ -100,6 +100,7 @@ export const coordinateCall = <E>(
       const completedText = yield* Ref.make<ReadonlyMap<ResponseId, string>>(new Map());
       const nextAudioSequence = yield* Ref.make<ReadonlyMap<ResponseId, number>>(new Map());
       const clearedPlayback = yield* Ref.make<ReadonlySet<ResponseId>>(new Set());
+      const interruptConfirmationPending = yield* Ref.make(false);
       const shuttingDown = yield* Ref.make(false);
       const onStateChange = options.onStateChange ?? (() => Effect.void);
 
@@ -244,6 +245,7 @@ export const coordinateCall = <E>(
         expectedResponseId: ResponseId | undefined,
         interruptFiber: boolean,
         failure?: CallOutput,
+        confirmInterrupt = false,
       ) {
         return yield* publicationLock.withPermit(
           Effect.gen(function* () {
@@ -251,10 +253,14 @@ export const coordinateCall = <E>(
               expectedResponseId,
               interruptFiber,
             );
+            const confirmation: ReadonlyArray<CallOutput> = confirmInterrupt &&
+              !(yield* Ref.getAndSet(interruptConfirmationPending, true))
+              ? [{ _tag: "interruptConfirmed" }] : [];
             if (
               invalidated._tag !== "Invalidated" &&
               invalidated._tag !== "PlaybackOnly"
             ) {
+              if (confirmation.length) yield* Queue.offer(controlPublications, confirmation);
               return invalidated;
             }
             yield* Queue.offer(controlPublications, [
@@ -265,6 +271,7 @@ export const coordinateCall = <E>(
                 }),
               ),
               ...(failure === undefined ? [] : [failure]),
+              ...confirmation,
             ]);
             return invalidated;
           }),
@@ -560,7 +567,7 @@ export const coordinateCall = <E>(
             break;
           }
           case "interrupt":
-            yield* invalidateAndPublish(undefined, true);
+            yield* invalidateAndPublish(undefined, true, undefined, true);
             break;
           case "hangup":
             yield* shutdown();
@@ -633,7 +640,9 @@ export const coordinateCall = <E>(
       return Stream.fromQueue(output).pipe(
         Stream.mapEffect((event) => {
           if (event._tag === "controlBatch") {
-            return Effect.succeed(event.events);
+            return event.events.some((control) => control._tag === "interruptConfirmed")
+              ? Ref.set(interruptConfirmationPending, false).pipe(Effect.as(event.events))
+              : Effect.succeed(event.events);
           }
           if (event._tag === "ttsFinal") {
             return stateLock.withPermit(
@@ -656,6 +665,10 @@ export const coordinateCall = <E>(
                   current?.responseId === event.responseId ? null : current,
                 );
                 return [{
+                  _tag: "assistantText",
+                  responseId: event.responseId,
+                  text,
+                } satisfies CallOutput, {
                   _tag: "responseFinished",
                   responseId: event.responseId,
                 } satisfies CallOutput];

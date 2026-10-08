@@ -249,6 +249,7 @@ describe("call coordinator", () => {
           sequence: 0,
           payload: new Uint8Array([1, 2]),
         },
+        { _tag: "assistantText", responseId: "response-1", text: "Hello there" },
         { _tag: "responseFinished", responseId: "response-1" },
       ]);
       expect(harness.text).toEqual([
@@ -677,6 +678,8 @@ describe("call coordinator", () => {
         { _tag: "clearPlayback", responseId: "response-2" },
         { _tag: "clearPlayback", responseId: "response-3" },
       ]);
+      expect(seen.filter((event) => event._tag === "interruptConfirmed").length)
+        .toBe(scenario === "interrupt" ? 1 : 0);
     }),
   );
 
@@ -885,15 +888,17 @@ describe("call coordinator", () => {
       yield* Queue.offer(input, { _tag: "hangup" });
       yield* Fiber.join(fiber);
 
-      expect(seen.slice(-3)).toEqual([
+      expect(seen.slice(-5)).toEqual([
         {
           _tag: "audio",
           responseId: "response-1",
           sequence: 0,
           payload: new Uint8Array([7]),
         },
+        { _tag: "assistantText", responseId: "response-1", text: "answer" },
         { _tag: "responseFinished", responseId: "response-1" },
         { _tag: "clearPlayback", responseId: "response-1" },
+        { _tag: "interruptConfirmed" },
       ]);
     }),
   );

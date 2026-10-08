@@ -92,6 +92,8 @@ CORS exception or a separate development server.
 - `audio(responseId, sequence, payload)`
 - `clearPlayback(responseId)`
 - `responseFinished(responseId)`
+- `assistantText(responseId, text)` after synthesis finalizes
+- `interruptConfirmed` after an explicit interrupt (coalesced while pending)
 - `failure(stage, reason, recoverable)`
 
 Schemas are the single source of truth for both the agent boundary and browser protocol. Unknown
@@ -520,3 +522,16 @@ fake microphone input but real Golem streams and provider fixtures: accepted app
 transcript, interrupt, confirmed hangup, permission denial, delayed hangup reply and late permission
 after disposal pass. All 67 tests pass. Oracle's lifecycle/retry findings were fixed and accepted.
 Capture is not a claim of live provider or high-quality DSP validation. Playback follows in Step 11.
+
+## Step 11 acceptance — 2026-10-08
+
+PCM playback schedules at most 64 sources / 8 seconds; overload stops the call rather than
+blocking a later interrupt behind capacity waits. Only contiguous natural onended completion
+advances heard progress; stopped/invalidated audio is never acknowledged. Explicit local
+interrupt mutes in-flight audio until the agent's coalesced confirmation. Completed assistant
+text is emitted after successful synthesis finalization, not as a speculative text stream.
+The wire additions do not change snapshots. Unit tests (70), typecheck, deployed stream smoke,
+and Chrome capture/playback/ACK/interrupt tests pass. Oracle accepted the functional change and
+required honest browser-proxy timing labels, now applied. Adversarial review found no bugs.
+Desktop/mobile, active, interrupted and failed screenshots were inspected; acoustic latency and
+live-provider speech quality remain unmeasured.

@@ -22,16 +22,18 @@ try {
     await route.continue();
   });
   await page.goto(origin);
-  page.on("response", async (response) => {
-    if (response.status() >= 400 && response.url().includes("/streams/")) console.error(response.status(), await response.text());
-  });
   await page.getByRole("button", { name: "Start call" }).click();
   await page.waitForFunction(() => document.getElementById("status").textContent === "Listening", { timeout: 20000 });
   await page.waitForFunction(() => document.getElementById("transcripts").textContent.includes("Hello fixture"), { timeout: 20000 });
   for (let attempt = 0; !retried && attempt < 50; attempt++) await page.waitForTimeout(100);
   assert.ok(retried, "uncertain append was not retried");
+  await page.waitForFunction(() => document.getElementById("events").textContent.includes("Played ·"));
+  await page.waitForFunction(() => document.getElementById("transcripts").textContent.includes("Assistant ·"));
   await page.screenshot({ path: ".amp/in/artifacts/console-active.png", fullPage: true });
   await page.getByRole("button", { name: "Interrupt", exact: true }).click();
+  await page.waitForFunction(() => document.getElementById("events").textContent.includes("Agent confirmed interrupt"));
+  assert.match(await page.locator("#silence").textContent(), /ms$/);
+  await page.screenshot({ path: ".amp/in/artifacts/console-interrupted.png", fullPage: true });
   await page.getByRole("button", { name: "Hang up" }).click();
   try {
     await page.waitForFunction(() => document.getElementById("status").textContent === "Ended", null, { timeout: 20000 });

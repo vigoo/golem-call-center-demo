@@ -73,6 +73,16 @@ export const ResponseFinishedOutput = Schema.Struct({
   responseId: ResponseId,
 });
 
+export const AssistantTextOutput = Schema.Struct({
+  _tag: Schema.Literal("assistantText"),
+  responseId: ResponseId,
+  text: Schema.String,
+});
+
+export const InterruptConfirmedOutput = Schema.Struct({
+  _tag: Schema.Literal("interruptConfirmed"),
+});
+
 export const FailureOutput = Schema.Struct({
   _tag: Schema.Literal("failure"),
   stage: ProviderStage,
@@ -85,6 +95,8 @@ export const CallOutput = Schema.Union([
   AudioOutput,
   ClearPlaybackOutput,
   ResponseFinishedOutput,
+  AssistantTextOutput,
+  InterruptConfirmedOutput,
   FailureOutput,
 ]);
 export type CallOutput = typeof CallOutput.Type;
