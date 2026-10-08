@@ -264,6 +264,83 @@ describe("call coordinator", () => {
     }),
   );
 
+  for (const emptyFrame of [false, true]) {
+    it.effect(`reports empty synthesis (empty frame: ${emptyFrame}) without committing an unspoken turn`, () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness([
+          Stream.make({ _tag: "TextDelta", text: "Unspoken answer" }, { _tag: "Completed" }),
+          Stream.make({ _tag: "TextDelta", text: "Spoken answer" }, { _tag: "Completed" }),
+        ]);
+        const input = yield* Queue.unbounded<CallInput, Cause.Done>();
+        const states: Array<SavedCallState> = [];
+        const fiber = yield* Effect.forkChild(runCall(input, harness, states));
+        yield* Queue.offer(harness.fluxEvents, turn("EndOfTurn", "First question", 1));
+        yield* waitUntil(() => harness.finishedContexts.length === 1);
+        if (emptyFrame) {
+          yield* Queue.offer(harness.ttsEvents, { _tag: "Audio", responseId: "response-1" as ResponseId, payload: new Uint8Array() });
+        }
+        yield* Queue.offer(harness.ttsEvents, { _tag: "Final", responseId: "response-1" as ResponseId });
+        yield* waitUntil(() => states.at(-1)?.responses[0]?.status === "interrupted");
+        expect(states.at(-1)?.phase).toBe("listening");
+        yield* Queue.offer(harness.fluxEvents, turn("EndOfTurn", "Second question", 2));
+        yield* waitUntil(() => harness.finishedContexts.length === 2);
+        yield* Queue.offer(harness.ttsEvents, { _tag: "Audio", responseId: "response-2" as ResponseId, payload: new Uint8Array([4, 9]) });
+        yield* Queue.offer(harness.ttsEvents, { _tag: "Final", responseId: "response-2" as ResponseId });
+        yield* waitUntil(() => states.at(-1)?.responses[1]?.status === "finished");
+        yield* Queue.offer(input, { _tag: "hangup" });
+        const output = yield* Fiber.join(fiber);
+        expect(output).toContainEqual({ _tag: "failure", stage: "elevenlabs", reason: "Speech synthesis returned no audio; check voice access and provider account limits", recoverable: true });
+        expect(output).not.toContainEqual({ _tag: "responseFinished", responseId: "response-1" });
+        expect(output).not.toContainEqual({ _tag: "assistantText", responseId: "response-1", text: "Unspoken answer" });
+        expect(output).toContainEqual({ _tag: "responseFinished", responseId: "response-2" });
+        expect(states.at(-1)?.turns.filter((entry) => entry.role === "assistant").map((entry) => entry.text)).toEqual(["Spoken answer"]);
+      }),
+    );
+  }
+
+  it.effect("rejects premature synthesis final and cancels generation while the reader is blocked", () =>
+    Effect.gen(function* () {
+      const releaseGeneration = yield* Deferred.make<void>();
+      const generationCancelled = yield* Deferred.make<void>();
+      const releaseReader = yield* Deferred.make<void>();
+      const readerBlocked = yield* Deferred.make<void>();
+      const first = Stream.make({ _tag: "TextDelta", text: "Unfinished answer" } as ResponseGenerationEvent).pipe(
+        Stream.concat(Stream.fromEffect(Deferred.await(releaseGeneration).pipe(
+          Effect.as({ _tag: "Completed" } as ResponseGenerationEvent),
+        ))),
+        Stream.ensuring(Deferred.succeed(generationCancelled, undefined)),
+      );
+      const harness = yield* makeHarness([first]);
+      const input = yield* Queue.unbounded<CallInput, Cause.Done>();
+      const states: Array<SavedCallState> = [];
+      const output: Array<CallOutput> = [];
+      const fiber = yield* coordinateCall(Stream.fromQueue(input), options(states, 1)).pipe(
+        Stream.provide(harness.layer),
+        Stream.runForEach((event) => Effect.gen(function* () {
+          output.push(event);
+          yield* Deferred.succeed(readerBlocked, undefined);
+          yield* Deferred.await(releaseReader);
+        })),
+        Effect.forkChild,
+      );
+      yield* Queue.offer(harness.fluxEvents, turn("EndOfTurn", "Question", 1));
+      yield* Deferred.await(readerBlocked);
+      yield* waitUntil(() => harness.text.length === 1);
+      yield* Queue.offer(harness.ttsEvents, { _tag: "Final", responseId: "response-1" as ResponseId });
+      yield* Deferred.await(generationCancelled);
+      expect(states.at(-1)?.responses[0]?.status).toBe("interrupted");
+      yield* Deferred.succeed(releaseGeneration, undefined);
+      yield* Deferred.succeed(releaseReader, undefined);
+      yield* waitUntil(() => output.some((event) => event._tag === "failure"));
+      yield* Queue.offer(input, { _tag: "hangup" });
+      yield* Fiber.join(fiber);
+      expect(harness.finishedContexts).toEqual([]);
+      expect(output).toContainEqual({ _tag: "failure", stage: "elevenlabs", reason: "Speech synthesis ended before text generation completed", recoverable: true });
+      expect(output.some((event) => event._tag === "assistantText" || event._tag === "responseFinished")).toBe(false);
+      expect(states.at(-1)?.turns.filter((entry) => entry.role === "assistant")).toEqual([]);
+    }),
+  );
+
   it.effect("invalidates overlapping speech and drops late audio from the old response", () =>
     Effect.gen(function* () {
       const firstStarted = yield* Deferred.make<void>();

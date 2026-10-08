@@ -140,7 +140,7 @@ describe("ElevenLabs multi-context TTS", () => {
             yield* session.startContext(second);
             yield* Queue.offer(
               fake.inbound,
-              '{"audio":"AQI=","contextId":"response-9","isFinal":false}',
+              '{"audio":"AQI=","contextId":"response-9","isFinal":null}',
             );
             yield* Queue.offer(
               fake.inbound,

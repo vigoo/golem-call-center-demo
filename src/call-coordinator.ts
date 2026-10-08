@@ -463,6 +463,7 @@ export const coordinateCall = <E>(
 
       const handleTtsEvent = Effect.fnUntraced(function*(event: ElevenLabsEvent) {
         if (event._tag === "Audio") {
+          if (event.payload.byteLength === 0) return;
           const sequence = yield* Ref.get(nextAudioSequence).pipe(
             Effect.map((current) => current.get(event.responseId) ?? 0),
           );
@@ -480,6 +481,23 @@ export const coordinateCall = <E>(
           return;
         }
 
+        const text = (yield* Ref.get(completedText)).get(event.responseId);
+        if (text === undefined) {
+          yield* invalidateAndPublish(
+            event.responseId,
+            true,
+            failureOutput("elevenlabs", "Speech synthesis ended before text generation completed", true),
+          );
+          return;
+        }
+        const audioChunks = (yield* Ref.get(nextAudioSequence)).get(event.responseId) ?? 0;
+        if (text.trim() && audioChunks === 0) {
+          yield* failResponse(event.responseId, {
+            stage: "elevenlabs",
+            reason: "Speech synthesis returned no audio; check voice access and provider account limits",
+          });
+          return;
+        }
         yield* Queue.offer(output, {
           _tag: "ttsFinal",
           responseId: event.responseId,

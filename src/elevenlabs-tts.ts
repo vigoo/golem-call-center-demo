@@ -12,7 +12,7 @@ const Alignment = Schema.Struct({
 export const ElevenLabsAudioOutput = Schema.Struct({
   audio: Schema.Uint8ArrayFromBase64,
   contextId: ContextId,
-  isFinal: Schema.optionalKey(Schema.Literal(false)),
+  isFinal: Schema.optionalKey(Schema.NullOr(Schema.Literal(false))),
   normalizedAlignment: Schema.optionalKey(Schema.NullOr(Alignment)),
   alignment: Schema.optionalKey(Schema.NullOr(Alignment)),
 });

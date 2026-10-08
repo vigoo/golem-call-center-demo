@@ -6,8 +6,10 @@ See [`DEVELOPMENT_PLAN.md`](./DEVELOPMENT_PLAN.md) for the design and commit-by-
 
 **Status:** the protocol-fixture pipeline and browser work locally. Active-call crash recovery is
 blocked by [GOL-799](https://linear.app/golem-cloud/issue/GOL-799/effect-duplex-agentstream-replay-stalls-after-simulate-crash-with).
-Live Deepgram/ElevenLabs compatibility and acoustic latency have **not** been verified. This is
-an unauthenticated development prototype, not a production telephony service.
+Live recognition and LLM responses were user-tested; ElevenLabs HTTP and multi-context WebSocket
+audio generation were verified separately with the current free-plan key. End-to-end live playback
+after the voice/decoder fix and acoustic latency still need verification. This is an unauthenticated
+development prototype, not a production telephony service.
 
 ## Prerequisites and isolated server
 
@@ -88,6 +90,16 @@ HTTPS and appropriate authentication before exposing transcripts or audio.
 Defaults: Flux `flux-general-en`, OpenAI `gpt-4o-mini`, ElevenLabs `eleven_flash_v2_5` with
 `pcm_16000`. Microphone frames are mono PCM16 little-endian, 16 kHz, approximately 80 ms.
 Resampling/low-pass filtering happens in the browser; the agent does no transcoding.
+
+The default voice is George (`JBFqnCBsd6RMkjVDRZzb`), verified with the current free-plan key.
+The previous Rachel ID returned HTTP 402 `paid_plan_required`: free users cannot use library
+voices through the API. Starter should remove that restriction; higher tiers are not needed for
+our 16 kHz PCM format. Account/voice availability can change: ElevenLabs documents that legacy
+default voices expire December 31, 2026 and are limited to accounts created before March 2026.
+See [voice availability](https://elevenlabs.io/docs/help-center/product/voices/my-voices/what-are-default-voices)
+and [library restrictions](https://elevenlabs.io/docs/eleven-creative/voices/voice-library).
+Empty synthesis reports a recoverable error instead of committing an unspoken assistant answer;
+premature synthesis termination cancels generation. Use a fresh call ID after redeploying.
 
 ## Protocol and limits
 

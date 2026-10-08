@@ -584,3 +584,31 @@ README now uses `-P live` to override shell preset selection too, and warns that
 agents retain their old configuration. Local CLI deployment plans verify all three live provider
 URLs without a preset, while `-P mock` retains all three fixture URLs. Unit tests and typecheck
 pass. No active agents are reset or deleted, and no live provider invocation is made by this fix.
+
+## Follow-up — live synthesis and free-plan voice access
+
+User testing confirmed recognition and LLM replies but no audio. The call's provider messages
+contained final markers with no audio. A temporary CLI-only Golem agent, using the existing
+opaque secret, established that Rachel (`21m00Tcm4TlvDq8ikWAM`) returns HTTP 402
+`paid_plan_required`: free users cannot use library voices through the API. Voice listing was
+unavailable because the key lacks `voices_read`; no secret was extracted or permission changed.
+
+George (`JBFqnCBsd6RMkjVDRZzb`) succeeded with the same free-plan key: HTTP 200 and 56,470 PCM
+bytes. A real multi-context WebSocket frame then exposed an application decoder bug:
+`isFinal` is null on audio frames. Accepting null as non-final let the application's existing
+TTS session and Golem transport receive 60,512 PCM bytes followed by finality. The default voice
+now uses George. This is account-specific evidence, not a guarantee for every free account;
+legacy default voices are scheduled to expire December 31, 2026. Starter should remove the
+library-access restriction if a paid voice is preferred; our 16 kHz format does not need Pro.
+
+The coordinator now reports sanitized recoverable failure for nonblank completed text with no
+audio bytes, without committing an unspoken answer. Oracle's first review identified empty-frame
+and premature-final edge cases. Zero-byte frames are ignored; a final before text completion
+invalidates the response and cancels generation. Regression tests cover absent/empty audio,
+successful subsequent turns, null audio-frame finality, and premature finality with a blocked
+reader. All 73 unit tests and typecheck pass; the bounded bug-finder review found no bugs.
+Oracle's follow-up approved the fix. The integration Golem smoke and Chrome call test pass,
+including audio playback acknowledgements, interrupt and hangup. The temporary diagnostic agent
+was removed and the normal live app redeployed with George. These are application/provider fixes,
+not new Golem defects. Full live browser playback still needs a fresh-call user check, and GOL-799
+remains the active-call crash-recovery blocker.

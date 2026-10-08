@@ -64,7 +64,7 @@ agents:
           Ask one question at a time. Do not use Markdown or claim to have performed actions.
       elevenLabs:
         apiUrl: wss://api.elevenlabs.io
-        voiceId: 21m00Tcm4TlvDq8ikWAM
+        voiceId: JBFqnCBsd6RMkjVDRZzb # George; verified with the current free-plan key
         modelId: eleven_flash_v2_5
         outputFormat: pcm_16000
         inactivityTimeoutSeconds: 180
