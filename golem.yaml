@@ -45,6 +45,11 @@ components:
     dir: ""
     templates: effect
 agents:
+  Web:
+    files:
+    - sourcePath: ./web/
+      targetPath: /web/
+      permissions: read-only
   CallAgent:
     config:
       deepgram:
@@ -96,7 +101,9 @@ httpApi:
     - subdomain: call-center-test
       agents:
         CallAgent: {}
+        Web: {}
     local:
     - subdomain: call-center
       agents:
         CallAgent: {}
+        Web: {}

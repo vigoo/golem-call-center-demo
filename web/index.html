@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Voice Lab — Golem Call Console</title>
+  <link rel="stylesheet" href="/assets/console.css">
+  <script type="module" src="/assets/console.js"></script>
+</head>
+<body>
+  <main>
+    <header><div><p class="eyebrow">GOLEM / VOICE LAB</p><h1>Call console</h1></div>
+      <span id="status" class="status" role="status">Ready</span></header>
+    <p class="intro">A durable conversation. A live audio pipeline. One place to see what happens.</p>
+    <section class="panel controls" aria-labelledby="session-title">
+      <h2 id="session-title">Session</h2>
+      <label for="call-id">Call ID <span class="muted">Use a new ID for each call</span></label>
+      <input id="call-id" type="text" maxlength="120" autocomplete="off" spellcheck="false">
+      <div class="buttons"><button id="start" disabled>Start call</button>
+        <button id="interrupt" class="secondary" disabled>Interrupt</button>
+        <button id="hangup" class="secondary" disabled>Hang up</button></div>
+      <p id="detail" class="muted">Console shell is ready. Microphone transport is not connected yet.</p>
+      <p id="error" role="alert" hidden></p>
+    </section>
+    <div class="metrics" aria-label="Call measurements">
+      <div><span>Input audio</span><strong id="input-count">0 frames</strong></div>
+      <div><span>End of turn → first audio</span><strong id="first-audio">—</strong></div>
+      <div><span>Interrupt → silence</span><strong id="silence">—</strong></div>
+    </div>
+    <div class="columns">
+      <section class="panel" aria-labelledby="conversation-title"><h2 id="conversation-title">Conversation</h2>
+        <p id="empty-transcript" class="muted">Transcripts will appear here as you speak.</p>
+        <div id="transcripts" aria-live="polite"></div><p id="partial" class="partial"></p></section>
+      <section class="panel" aria-labelledby="events-title"><h2 id="events-title">Pipeline events</h2>
+        <ol id="events" aria-label="Recent pipeline events"></ol></section>
+    </div>
+    <footer>Experimental console · Audio is sent to Deepgram, OpenAI, and ElevenLabs through Golem.
+      No production authentication or retention controls. Do not use sensitive recordings.</footer>
+  </main>
+</body>
+</html>

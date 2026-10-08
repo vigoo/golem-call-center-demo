@@ -502,3 +502,11 @@ It is preserved, not cleaned. Current testing uses `.amp/in/local-golem/data-cur
 same isolated ports. Compatibility between unreleased development commits is not claimed.
 The CLI refreshed its generated guidance; Playwright is installed as development-only browser
 verification tooling. No changes were made to the SDK checkout.
+
+## Step 9 acceptance — 2026-10-08
+
+The static-only ephemeral Web router serves read-only initial HTML/CSS/JS files on the call API
+origin. Local-SDK build/deploy, browser MIME/404 checks, desktop/mobile rendering and DOM checks
+pass. Screenshots were inspected. Oracle found no Step 9 blockers. Golem reserves Cache-Control
+for its file responses, so the router leaves caching to the platform rather than overriding it.
+Capture and playback remain disabled in this deliberately separate UI-shell commit.
