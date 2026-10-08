@@ -44,7 +44,12 @@ export const CallAgent = defineAgent({
   init: () => Ref.make(initialCallState()),
   snapshot: Snapshot.strategy<Ref.Ref<SavedCallState>, SavedCallState>({
     save: (state) => Ref.get(state).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ValidatedCallState))),
-    restore: (saved) => Schema.decodeUnknownEffect(ValidatedCallState)(saved).pipe(Effect.flatMap(Ref.make)),
+    restore: (saved) => Schema.decodeUnknownEffect(ValidatedCallState)(saved).pipe(
+      Effect.tap((state) => Effect.logInfo("Call snapshot restored").pipe(
+        Effect.annotateLogs({ phase: state.phase, turns: state.turns.length }),
+      )),
+      Effect.flatMap(Ref.make),
+    ),
   }),
   methods: (state) => ({
     run: ({ input }) => Effect.gen(function* () {

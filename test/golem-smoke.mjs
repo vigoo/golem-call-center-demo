@@ -35,13 +35,15 @@ if (process.env.GOLEM_TEST_EXPECT_ENDED) {
     const events = await response.json();
     if (events.length) {
       assert.equal(events[0].failure?.reason, "Call has ended; start a new call ID");
-      rejected = true;
-      break;
+      if (response.headers.get("Stream-Closed") === "true") {
+        rejected = true;
+        break;
+      }
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   assert.ok(rejected, "Restored ended call did not reject a new run");
-  console.log("Passed: restored ended state rejects reuse");
+  console.log("Passed: recovered ended state rejects reuse and closes output");
   process.exit(0);
 }
 await append([{ audio: { sequence: 0, capturedAt: 0, payload: "AAA=" } }]);

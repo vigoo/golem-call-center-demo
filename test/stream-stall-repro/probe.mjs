@@ -17,15 +17,19 @@ for (let run = 0; run < 10; run++) {
     headers: { "Producer-Id": "probe", "Producer-Epoch": "0", "Producer-Seq": "0", "Stream-Closed": "true" } });
   const deadline = performance.now() + 10000;
   let passed = false;
+  let offset = "-1";
+  const received = [];
   while (performance.now() < deadline) {
-    const response = await request("/streams/output?offset=-1");
-    const output = await response.json();
-    if (output.length) {
-      assert.deepEqual(output, ["hello"]);
+    const response = await request(`/streams/output?offset=${encodeURIComponent(offset)}`);
+    offset = response.headers.get("Stream-Next-Offset");
+    assert.ok(offset, "Missing output cursor");
+    received.push(...await response.json());
+    if (response.headers.get("Stream-Closed") === "true") {
+      assert.deepEqual(received, ["hello"]);
       passed = true;
       break;
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  assert.ok(passed, `StreamProbe("${name}") stalled without echo output`);
+  assert.ok(passed, `StreamProbe("${name}") stalled before echo/output closure`);
 }

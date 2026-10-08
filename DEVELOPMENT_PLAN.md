@@ -485,3 +485,20 @@ The runnable reduced reproduction is in `test/stream-stall-repro/`.
 Steps 9–12 remain pending rather than hiding this failure behind a browser UI. Resume with repeated
 smoke/reduced-probe verification once GOL-750 is resolved. Live Deepgram/ElevenLabs credentials
 are still unavailable; protocol-fixture results do not establish live provider compatibility.
+
+## Step 8 acceptance — 2026-10-08
+
+Verified GOL-750 fixed on CLI/runtime `v1.6.0-rc1-28-g5948c58e5f` with the freshly rebuilt
+local Effect SDK. Ten fresh reduced-probe invocations pass echo **and output closure**; seven
+full call invocations pass transcript, audio, response completion, acknowledgement and hangup.
+Invocation completion and saved turns/playback were inspected in the oplog. After a same-version
+server restart, the ended call rejects reuse and closes output. The `Call snapshot restored`
+marker in its oplog confirms the SDK's restore strategy ran (`phase=ended`, `turns=2`), not merely
+equivalent behavior reconstructed by replay. Step 8 is accepted; frontend work can proceed.
+
+The older development-version data directory caused a compressed-oplog decode panic at startup,
+reported generically as [GOL-797](https://linear.app/golem-cloud/issue/GOL-797/a-compressed-oplog-decode-failure-can-panic-the-local-server-during).
+It is preserved, not cleaned. Current testing uses `.amp/in/local-golem/data-current`, with the
+same isolated ports. Compatibility between unreleased development commits is not claimed.
+The CLI refreshed its generated guidance; Playwright is installed as development-only browser
+verification tooling. No changes were made to the SDK checkout.

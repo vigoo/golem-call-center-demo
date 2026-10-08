@@ -16,7 +16,7 @@ localServer:
   customRequestPort: 19006
   mcpPort: 19007
   portsFile: .amp/in/local-golem/ports.json
-  dataDir: .amp/in/local-golem/data
+  dataDir: .amp/in/local-golem/data-current
   systemMemoryOverride: 4GiB
 
 version:
