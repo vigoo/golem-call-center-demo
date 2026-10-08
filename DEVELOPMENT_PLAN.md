@@ -510,3 +510,13 @@ origin. Local-SDK build/deploy, browser MIME/404 checks, desktop/mobile renderin
 pass. Screenshots were inspected. Oracle found no Step 9 blockers. Golem reserves Cache-Control
 for its file responses, so the router leaves caching to the platform rather than overriding it.
 Capture and playback remain disabled in this deliberately separate UI-shell commit.
+
+## Step 10 acceptance — 2026-10-08
+
+AudioWorklet capture produces 80 ms PCM16/16 kHz mono frames with continuous resampling and a
+browser low-pass filter. One bounded producer retries uncertain appends with unchanged identity;
+output reads retry interrupted bodies at the same opaque cursor. The deployed Chrome test uses
+fake microphone input but real Golem streams and provider fixtures: accepted append reply loss,
+transcript, interrupt, confirmed hangup, permission denial, delayed hangup reply and late permission
+after disposal pass. All 67 tests pass. Oracle's lifecycle/retry findings were fixed and accepted.
+Capture is not a claim of live provider or high-quality DSP validation. Playback follows in Step 11.
