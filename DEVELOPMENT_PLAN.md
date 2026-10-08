@@ -667,3 +667,34 @@ Desktop screenshots for every scenario and mobile screenshots were inspected, in
 corrected Flux/barge-in views and the console link. All 76 unit tests and typecheck pass; ordinary
 console smoke and microphone/playback/ACK/interrupt/hangup regression tests also pass.
 The bounded walkthrough bug-finder review found no bugs. The deployed OpenAPI link returns 200.
+
+## Remark — potential raw-byte audio transport (not implemented)
+
+Durable Streams does not always require base64. Source inspection of the current Golem release
+confirms that direct byte slots accept raw HTTP POST bodies and return raw bytes through ordinary
+or long-poll HTTP GET. Binary SSE responses still use base64 because SSE is text. In the Effect
+SDK, a direct byte slot is `WitTypes.AgentStream(WitTypes.Uint8)`, not
+`AgentStream(Uint8ArraySchema)`, which is a stream of byte arrays. Golem uses packed byte payloads
+on the direct-byte path.
+
+The application's current mixed audio/control streams are JSON, with audio represented by
+`Schema.Uint8ArrayFromBase64`. This is an application protocol choice; changing only the payload
+field would not make these mixed streams raw binary slots. Two possible future designs are:
+
+- Separate raw PCM input/output slots from JSON control, transcript and playback-ACK slots.
+  Cross-stream ordering, response identity, interruption boundaries and ACK positions would need
+  explicit coordination. Raw byte reads concatenate payloads and do not preserve original chunk
+  boundaries, so consumers cannot use HTTP response boundaries as audio-message boundaries.
+- Encode audio and control records together in a framed binary byte stream. This preserves their
+  shared ordering but requires a framing protocol and matching browser/agent parsers that handle
+  records split across or combined within HTTP reads.
+
+Either design would need raw-byte reads rather than SSE to avoid base64 on the browser-facing
+audio path. Raw bytes are approximately 25% smaller than base64 audio payloads, excluding JSON
+metadata, and avoid base64 conversion work. ElevenLabs' current WebSocket protocol would still
+deliver base64 audio to the agent, but the agent would not need to re-encode it for the browser.
+
+Separate audio/control slots are worth exploring, but preserving the current interruption and
+playback-ACK semantics makes this a protocol redesign rather than a drop-in optimization.
+This remark records a future option only: no implementation, schema migration or deployment
+change is authorized by it.
