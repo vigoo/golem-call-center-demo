@@ -612,3 +612,39 @@ including audio playback acknowledgements, interrupt and hangup. The temporary d
 was removed and the normal live app redeployed with George. These are application/provider fixes,
 not new Golem defects. Full live browser playback still needs a fresh-call user check, and GOL-799
 remains the active-call crash-recovery blocker.
+
+## Follow-up — paced playback (completed)
+
+The user confirmed live speech-to-speech worked, then hit the browser's eight-second/64-chunk
+fail-on-backlog guard. Replace that prototype guard, without changing persisted state or the wire
+protocol, and commit this step separately before building the walkthrough.
+
+Playback now splits provider chunks into at most one-second sources and awaits capacity within a
+four-second/64-source scheduled window. It acknowledges original chunks only after all slices
+naturally complete, contiguously. Clear, local interrupt and irreversible terminal stop wake
+blocked scheduling; stopped sources are never acknowledged. Single provider frames over 8 MiB
+remain rejected. The backlog stays in Golem's Durable output stream, apart from the currently
+materialized HTTP batch and provider frame; this is not a total-memory/retention guarantee.
+
+Oracle's design review established that confirmation must stay ordered with audio. One paced
+cursor therefore retains the existing UI dispatcher; a second independent cursor only fast-paths
+clear-playback, fatal failures and terminal EOF. Both cursors join before normal disposal.
+This doubles output downloads but requires no Golem API or state migration. EOF cancels audio.
+Oracle approved the implementation, and the bounded bug-finder found no bugs.
+
+76 unit tests and typecheck pass. Real Chrome/Golem tests pass for a 12.25-second chunk, 100-chunk
+burst, natural final ACK, explicit interrupt, provider StartOfTurn barge-in, fatal STT failure and
+hangup while scheduling is blocked. Measured scheduling stays below four seconds. The fixture
+uses explicit control triggers after playback begins instead of timing-dependent failures.
+The ordinary microphone/retry/playback/interrupt/hangup browser regression also passes.
+
+## Next step — interactive architecture walkthrough
+
+Host a self-contained `/walkthrough` page through the existing ephemeral Web router. Keep the
+console's visual language; no extra frontend framework, provider calls or credentials required.
+Provide selectable scenarios and step-by-step navigation highlighting browser, Durable Streams,
+CallAgent, STT, LLM, TTS and snapshot boundaries. Show representative wire payloads, ownership,
+source paths, buffering/ACK semantics, interruption, retry/closure and the GOL-799 recovery limit.
+Examples must be explicitly illustrative, not a live trace or a crash-recovery claim. Verify all
+steps and deep links in a browser, inspect desktop/mobile screenshots, obtain Oracle review,
+document the page and commit it separately. Redeploy the normal local app and leave it running.

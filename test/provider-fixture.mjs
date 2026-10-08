@@ -2,7 +2,7 @@
 import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 
-const newScenario = (settings = {}) => ({ settings, counts: { stt: 0, openai: 0, elevenlabs: 0 }, held: new Map(), resources: new Set(), released: false });
+const newScenario = (settings = {}) => ({ settings, counts: { stt: 0, openai: 0, elevenlabs: 0 }, held: new Map(), resources: new Set(), controls: new Set(), released: false });
 let scenario = newScenario();
 const deliver = (state, stage, owner, transmit) => {
   if (state.settings.holdStage === stage && !state.released) state.held.set(owner, { stage, transmit });
@@ -13,7 +13,9 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST") {
       let body = ""; for await (const chunk of request) body += chunk;
       const settings = JSON.parse(body);
-      if (settings.release) {
+      if (settings.event) {
+        for (const trigger of scenario.controls) trigger(settings.event);
+      } else if (settings.release) {
         scenario.released = true;
         const held = [...scenario.held.values()]; scenario.held.clear();
         for (const item of held) item.transmit();
@@ -74,9 +76,19 @@ sockets.on("connection", (socket, request) => {
   if (deepgram) socket.send(JSON.stringify({
     type: "Connected", request_id: "fixture", sequence_id: sequence++,
   }));
+  if (deepgram) {
+    const trigger = (event) => {
+      if (event === "fatal") { socket.close(1011, "Fixture failure"); return; }
+      if (event === "barge-in") send("stt", { type: "TurnInfo", request_id: "fixture", sequence_id: sequence++,
+        event: "StartOfTurn", turn_index: sequence, transcript: "New speech",
+        words: [], audio_window_start: 2, audio_window_end: 2.08, end_of_turn_confidence: 0.5 });
+    };
+    state.controls.add(trigger); socket.on("close", () => state.controls.delete(trigger));
+  }
   socket.on("message", (bytes, binary) => {
     if (deepgram && binary) {
       // A continuous microphone should not invent a new turn for every 80 ms frame.
+      if (settings.singleTurn && lastTurn) return;
       if (Date.now() - lastTurn < 1000) return;
       lastTurn = Date.now();
       state.counts.stt++;
@@ -97,11 +109,13 @@ sockets.on("connection", (socket, request) => {
     if (message.text?.trim()) {
       state.counts.elevenlabs++;
       if (settings.failStage === "elevenlabs") { socket.close(1011, "Fixture failure"); return; }
-      const samples = Buffer.alloc(3200);
-      for (let i = 0; i < 1600; i++) {
+      const samples = Buffer.alloc(Math.round(32000 * (settings.audioSeconds ?? .1)));
+      for (let i = 0; i < samples.length / 2; i++) {
         samples.writeInt16LE(Math.round(2000 * Math.sin(i * Math.PI * 2 * 440 / 16000)), i * 2);
       }
-      send("elevenlabs", { contextId: message.context_id, audio: samples.toString("base64") });
+      for (let chunk = 0; chunk < (settings.audioChunks ?? 1); chunk++) {
+        send("elevenlabs", { contextId: message.context_id, audio: samples.toString("base64"), isFinal: null });
+      }
     }
     if (message.close_context) send("elevenlabs", { contextId: message.context_id, isFinal: true });
     if (message.close_socket) socket.close();

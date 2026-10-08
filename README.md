@@ -6,10 +6,10 @@ See [`DEVELOPMENT_PLAN.md`](./DEVELOPMENT_PLAN.md) for the design and commit-by-
 
 **Status:** the protocol-fixture pipeline and browser work locally. Active-call crash recovery is
 blocked by [GOL-799](https://linear.app/golem-cloud/issue/GOL-799/effect-duplex-agentstream-replay-stalls-after-simulate-crash-with).
-Live recognition and LLM responses were user-tested; ElevenLabs HTTP and multi-context WebSocket
-audio generation were verified separately with the current free-plan key. End-to-end live playback
-after the voice/decoder fix and acoustic latency still need verification. This is an unauthenticated
-development prototype, not a production telephony service.
+Live recognition, LLM responses and audio playback were user-tested. Long-response buffering is
+also tested against protocol fixtures using real Chrome playback and Golem streams. Acoustic
+latency remains unmeasured. This is an unauthenticated development prototype, not a production
+telephony service.
 
 ## Prerequisites and isolated server
 
@@ -120,11 +120,21 @@ explicit interrupt clears local playback immediately and suppresses audio until 
 Only naturally completed, contiguous audio advances heard progress—download/scheduling is not
 playback. Assistant text appears after synthesis finalization, not token by token.
 
-Agent queues are bounded; browser append backlog is capped at 64 requests and playback at
-64 sources / 8 seconds. Browser overload **fails the call**, rather than claiming lossless
-backpressure. Output retention is handled by Golem, not limited by the browser queue. Conversation
-history grows with committed turns; there is no production retention/context-trimming policy.
+Agent queues are bounded; browser append backlog is capped at 64 requests. Playback schedules at
+most 64 sources / 4 seconds, splitting provider chunks into at most one-second slices. Long replies
+and bursts wait for scheduling capacity instead of failing. One ordered output cursor paces audio
+and handles UI/confirmation; a second cursor immediately handles clear-playback, fatal failure and
+terminal closure. Confirmation only unmutes on the ordered cursor. This downloads output twice;
+HTTP response batches are still materialized, so the scheduling limit is **not** an end-to-end
+memory bound. Each decoded provider audio frame is limited to 8 MiB. Input overload, oversized or
+malformed audio still fails the call. EOF cancels playback, rather than draining obsolete speech.
+Output retention is handled by Golem. Conversation history grows with committed turns; there is
+no production retention/context-trimming policy.
 Scoped cleanup handles hangup/failure; closing the tab makes only a best-effort hangup request.
+
+Run `node test/browser-buffering.mjs` serially with the integration deployment and fixture. It
+checks a 12.25-second chunk, a 100-chunk burst, whole-chunk playback ACKs, local interrupt,
+server barge-in, fatal provider failure and hangup while scheduling is blocked.
 
 The metrics “Final transcript received → first audio scheduled” and “Local playback stop dispatch”
 are browser-side proxies. They do not measure microphone end-of-turn, acoustic first sound, or
