@@ -535,3 +535,39 @@ and Chrome capture/playback/ACK/interrupt tests pass. Oracle accepted the functi
 required honest browser-proxy timing labels, now applied. Adversarial review found no bugs.
 Desktop/mobile, active, interrupted and failed screenshots were inspected; acoustic latency and
 live-provider speech quality remain unmeasured.
+
+## Step 12 recovery checkpoint — 2026-10-08
+
+The 70-test suite, typecheck, local-SDK deployment, stream smoke, ten fresh reduced echo probes
+and a 30-second Chrome fake-microphone call pass. The browser verifies an accepted playback ACK,
+uncertain append retry, capture continuity, explicit interrupt, hangup, denied permission and
+late permission after disposal. Final screenshots were inspected. Transcript/event panels scroll
+when the sustained call exceeds their visible height.
+
+The new serial recovery smoke passes delayed reading (1.5 seconds), stage-specific failures, and
+explicit interruption during STT, OpenAI and ElevenLabs. Fixture hold/release handshakes prove the
+nominated stage is pending when interrupted/crashed; scenario-local controls and resource disposal
+isolate tests. LLM/TTS interruption releases obsolete output and rejects late audio/completion,
+including during the final drain. STT interruption precedes committed speech, so the test hangs
+up before releasing its held turn rather than incorrectly suppressing
+future speech. Small fixture tests and a 30-second call are not production backpressure/load
+or arbitrarily long-call guarantees.
+
+Simulate-crash during all three stages stalls for the 20-second recovery deadline. The reduced
+duplex string-echo agent reproduces this without AI, custom snapshots or a coordinator: after
+the first echo, crash/replay accepts the next input append but emits no second echo/closure.
+After duplicate-checking Golem 1.6 finalization, reported generically as
+[GOL-799](https://linear.app/golem-cloud/issue/GOL-799/effect-duplex-agentstream-replay-stalls-after-simulate-crash-with).
+Root cause remains unestablished. Both reproductions retain failing assertions; the recovery
+suite is **not green**. Logs and event captures are retained under `.amp/in/`.
+
+Oracle reviewed Step 12 and its follow-up. Harness findings were addressed with deterministic
+stage gating, separate recovery deadlines, interval capture checks, and assertions rejecting
+premature closure, late failures and stale response output through the final drain. The review
+permits a blocked checkpoint with those corrections, not full recovery acceptance.
+
+README now documents isolated setup, local SDK override, mock versus live secrets, browser use,
+wire protocol, queue failure policy, proxy timings and release findings. Step 12 is a reviewable
+**blocked acceptance checkpoint**, not a claim that crash recovery or live providers work.
+Resume by verifying GOL-799's fix with both reproductions and obtaining Deepgram/ElevenLabs
+credentials for live speech/latency checks. No SDK changes, cloud deploy, push or merge occurred.

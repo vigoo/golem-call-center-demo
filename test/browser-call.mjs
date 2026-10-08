@@ -7,10 +7,14 @@ const browser = await chromium.launch({ channel: process.env.PLAYWRIGHT_CHANNEL 
 try {
   const page = await browser.newPage({ viewport: { width: 1120, height: 900 } });
   const errors = []; page.on("pageerror", (error) => errors.push(error.message));
-  let retried = false, producer = null;
+  let retried = false, producer = null, acknowledged = 0;
   await page.route("**/streams/input", async (route) => {
     const request = route.request();
     const headers = request.headers();
+    if (request.postData()?.includes('"playbackAck"')) {
+      const response = await route.fetch(); assert.ok(response.ok()); acknowledged++;
+      await route.fulfill({ response }); return;
+    }
     if (headers["stream-closed"] === "true") {
       const response = await route.fetch(); await new Promise((resolve) => setTimeout(resolve, 1000));
       await route.fulfill({ response }); return;
@@ -29,6 +33,20 @@ try {
   assert.ok(retried, "uncertain append was not retried");
   await page.waitForFunction(() => document.getElementById("events").textContent.includes("Played ·"));
   await page.waitForFunction(() => document.getElementById("transcripts").textContent.includes("Assistant ·"));
+  for (let attempt = 0; !acknowledged && attempt < 50; attempt++) await page.waitForTimeout(100);
+  assert.ok(acknowledged, "No playback acknowledgement was accepted by Golem");
+  const duration = Number(process.env.GOLEM_TEST_DURATION_MS ?? 0);
+  if (duration) {
+    let previous = Number((await page.locator("#input-count").textContent()).split(" ")[0]);
+    for (let elapsed = 0; elapsed < duration;) {
+      const interval = Math.min(5000, duration - elapsed);
+      await page.waitForTimeout(interval); elapsed += interval;
+      const captured = Number((await page.locator("#input-count").textContent()).split(" ")[0]);
+      assert.ok(captured - previous >= interval / 160, "Microphone capture stopped during an interval");
+      previous = captured;
+    }
+    assert.equal(await page.locator("#error").isVisible(), false);
+  }
   await page.screenshot({ path: ".amp/in/artifacts/console-active.png", fullPage: true });
   await page.getByRole("button", { name: "Interrupt", exact: true }).click();
   await page.waitForFunction(() => document.getElementById("events").textContent.includes("Agent confirmed interrupt"));

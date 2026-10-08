@@ -1,30 +1,148 @@
 # Call Center
 
-An Effect-based Golem application for the streaming call-center prototype described in
-[`DEVELOPMENT_PLAN.md`](./DEVELOPMENT_PLAN.md).
+A durable Effect Golem call agent: Deepgram Flux → Effect AI / OpenAI Responses → ElevenLabs
+streaming TTS. A static-only ephemeral Golem HTTP router hosts the same-origin browser console.
+See [`DEVELOPMENT_PLAN.md`](./DEVELOPMENT_PLAN.md) for the design and commit-by-commit history.
 
-## Development prerequisites
+**Status:** the protocol-fixture pipeline and browser work locally. Active-call crash recovery is
+blocked by [GOL-799](https://linear.app/golem-cloud/issue/GOL-799/effect-duplex-agentstream-replay-stalls-after-simulate-crash-with).
+Live Deepgram/ElevenLabs compatibility and acoustic latency have **not** been verified. This is
+an unauthenticated development prototype, not a production telephony service.
 
-- Node.js 22.12 or newer
-- Golem CLI 1.6
-- The Golem repository checked out at `../../golem`
-- The local Effect SDK built at `../../golem/sdks/effect`
+## Prerequisites and isolated server
 
-Install dependencies and run the local checks:
+- Node.js 22.12 or newer, Golem CLI 1.6, and Google Chrome for browser tests.
+- Golem checkout at `../../golem`, with its Effect SDK built at `../../golem/sdks/effect`.
+- Exact Effect/OpenAI 4.0.0 dependencies; the SDK dependency is a local `file:` link.
+
+Commands below are Nushell, from this repository root. Set the override in **each terminal** that
+runs Golem so the CLI and npm resolve the same SDK:
 
 ```nu
+$env.GOLEM_EFFECT_GOLEM_PATH = ($env.HOME | path join projects/golem/golem/sdks/effect)
 npm install
 npm test
 npm run typecheck
+golem build -Y
+golem server run
 ```
 
-The application intentionally uses a `file:` dependency on the local Effect Golem SDK. Point the
-Golem CLI at the same checkout for every build or deployment:
+`golem.yaml` selects management **19881**, HTTP **19006**, MCP **19007**, a 4GiB agent-admission
+memory override, and `.amp/in/local-golem/data-current`. Readiness is recorded in
+`.amp/in/local-golem/ports.json`. These are independent of default Golem ports and data. The memory
+override is not a hard RSS limit. Do not start a second server on these ports or clean its data.
+HTTP/MCP listeners bind all interfaces; use a trusted development machine/network.
+
+Before writing test artifacts, ensure `/.amp/in/` is in this repository's local Git exclude file
+(locate it with `git rev-parse --git-path info/exclude`); it is already configured in this checkout.
+
+## Try the console without provider credentials
+
+In another terminal, start the deterministic protocol fixture (port **19110**):
 
 ```nu
-$env.GOLEM_EFFECT_GOLEM_PATH = ("../../golem/sdks/effect" | path expand)
-golem build -Y
+node test/provider-fixture.mjs
 ```
 
-Provider configuration, local deployment, and browser usage will be documented as those stages are
-implemented. Until then, `src/streaming-agent.ts` remains the generated Durable Streams example.
+With the server and fixture running:
+
+```nu
+$env.GOLEM_EFFECT_GOLEM_PATH = ($env.HOME | path join projects/golem/golem/sdks/effect)
+golem deploy -Y -E integration -P mock
+node test/golem-smoke.mjs
+node test/browser-smoke.mjs
+with-env { GOLEM_TEST_DURATION_MS: "30000" } { node test/browser-call.mjs }
+```
+
+Open [the local console](http://call-center-test.localhost:19006). Start a call, grant microphone
+access, interrupt, then hang up. Use a **new call ID** for each call; ended agents reject reuse.
+The fixture ignores speech content, produces “Hello fixture” at most once per second, replies
+“Hello from the fixture.” and plays a short tone. Browser tests use Chrome's fake microphone,
+but real AudioWorklet capture, Golem streams, WebSockets, playback and acknowledgements.
+Default/mobile/active/interrupted/failed screenshots are saved in `.amp/in/artifacts/`.
+
+## Live providers
+
+In a private terminal, set `DEEPGRAM_API_KEY`, `OPENAI_API_KEY` and `ELEVENLABS_API_KEY` without
+putting values in committed files or shell history. The manifest's `local` secret defaults resolve
+these variables into Golem secret configuration; agents receive opaque redacted handles.
+Configure your ElevenLabs voice/model and other non-secret settings under `agents.CallAgent.config`
+in `golem.yaml`, then:
+
+```nu
+$env.GOLEM_EFFECT_GOLEM_PATH = ($env.HOME | path join projects/golem/golem/sdks/effect)
+golem deploy -Y -E local
+```
+
+Open [the live-provider console](http://call-center.localhost:19006). Do **not** use `-P mock` for
+this deployment. Secret defaults seed missing values, not rotate existing values; use Golem's
+secret-management commands if credentials already exist. Nothing here requires cloud deployment.
+Use headphones to limit feedback. `*.localhost` is a browser secure context; remote hosting needs
+HTTPS and appropriate authentication before exposing transcripts or audio.
+
+Defaults: Flux `flux-general-en`, OpenAI `gpt-4o-mini`, ElevenLabs `eleven_flash_v2_5` with
+`pcm_16000`. Microphone frames are mono PCM16 little-endian, 16 kHz, approximately 80 ms.
+Resampling/low-pass filtering happens in the browser; the agent does no transcoding.
+
+## Protocol and limits
+
+`CallAgent(callId).run` exposes `input` and `output` Durable Stream slots under
+`/calls/{callId}/run/invocations/{invocationId}`. The browser creates a session with PUT, POSTs
+input batches with stable `Producer-Id`/`Producer-Epoch`/`Producer-Seq`, and follows output GETs
+using the opaque `Stream-Next-Offset` cursor. Failed body reads retry the same cursor. Retries are
+bounded; prolonged outages stop the call rather than promise transparent reconnection.
+
+Effect schemas in `src/call-protocol.ts` own the contract. HTTP uses **WIT variant JSON**, not
+the in-process `_tag` representation: `[{"audio":{"sequence":0,"capturedAt":0,"payload":"AAA="}}]`,
+`[{"playbackAck":{"responseId":"response-1","playedThrough":0}}]`, `["interrupt"]`, `["hangup"]`.
+Audio payloads are base64. Output carries transcripts, response-tagged audio, assistant text,
+clear-playback controls, interrupt confirmation, response completion and sanitized stage failures.
+
+Only committed Flux `EndOfTurn` starts generation. `StartOfTurn` invalidates the active response;
+explicit interrupt clears local playback immediately and suppresses audio until agent confirmation.
+Only naturally completed, contiguous audio advances heard progress—download/scheduling is not
+playback. Assistant text appears after synthesis finalization, not token by token.
+
+Agent queues are bounded; browser append backlog is capped at 64 requests and playback at
+64 sources / 8 seconds. Browser overload **fails the call**, rather than claiming lossless
+backpressure. Output retention is handled by Golem, not limited by the browser queue. Conversation
+history grows with committed turns; there is no production retention/context-trimming policy.
+Scoped cleanup handles hangup/failure; closing the tab makes only a best-effort hangup request.
+
+The metrics “Final transcript received → first audio scheduled” and “Local playback stop dispatch”
+are browser-side proxies. They do not measure microphone end-of-turn, acoustic first sound, or
+interruption-to-silence. No production latency or speech-quality result is claimed.
+
+## Recovery acceptance and release findings
+
+Run serially against the integration deployment and fixture (its control endpoint is shared):
+
+```nu
+node test/recovery-smoke.mjs
+```
+
+Delayed reading (1.5 seconds), provider failures and explicit interruption during STT/OpenAI/TTS
+are tested separately from simulated crashes. The script asserts failures rather than hiding them.
+Currently all three crash scenarios stall; the command exits nonzero. Logs/events go to `.amp/in/`.
+Select a scenario with `with-env { GOLEM_TEST_SCENARIO: "interrupt-openai" } { node test/recovery-smoke.mjs }`.
+
+Observed on CLI/server `v1.6.0-rc1-28-g5948c58e5f` and local SDK at Golem revision
+`5948c58e5f682823f34f53083db12f9f0b1e456d`:
+
+- GOL-742's missing-span trap and GOL-750's live-input stall are fixed. Repeated fixture-backed calls and
+  ten fresh reduced echo probes pass, including output closure.
+- Completed call state survives same-version server restart; an explicit SDK restore marker and
+  ended-call rejection verify snapshot restoration. This is **not** active-call recovery evidence.
+- **GOL-799:** simulate-crash during STT, OpenAI or TTS stalls replay. A reduced duplex string-echo
+  agent reproduces the failure without AI, custom snapshots, or a coordinator. Its post-crash input
+  append succeeds but no second echo/output closure arrives. Root cause remains unestablished.
+  See [`test/stream-stall-repro/README.md`](./test/stream-stall-repro/README.md) for commands.
+- GOL-739/GOL-736 static-contract extraction limitations have localized config/validation
+  workarounds. Snapshot shape stays structural; save/restore validates cross-record invariants.
+- Older unreleased server data caused a compressed-oplog panic (GOL-797). That data directory is
+  preserved separately; compatibility across development commits is not assumed.
+
+Reports were checked for duplicates in **Golem 1.6 finalization** and phrased as general Golem
+issues. No SDK changes, cloud deployment, push or merge were performed. Active-call replay and
+live-provider testing remain acceptance gates; transparent provider-session continuation is not
+a v1 guarantee even after the runtime blocker is fixed.

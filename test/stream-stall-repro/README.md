@@ -46,3 +46,21 @@ with-env { GOLEM_EFFECT_GOLEM_PATH: ($env.HOME | path join projects/golem/golem/
 The probe deliberately leaves the failed invocation intact for oplog inspection. Do not report
 an intermittent passing rerun as a fix. Bound the runs; accumulated open test agents consume
 resources, and admission-blocked Idle agents are a different failure from the Running stall.
+
+## Live fix verified; crash replay still blocked
+
+On `v1.6.0-rc1-28-g5948c58e5f` and the freshly rebuilt matching local Effect SDK, all ten live
+echo/closure probes pass. GOL-750 is fixed. The same reduced agent now also reproduces
+[GOL-799](https://linear.app/golem-cloud/issue/GOL-799/effect-duplex-agentstream-replay-stalls-after-simulate-crash-with):
+
+```nu
+$env.GOLEM_EFFECT_GOLEM_PATH = ($env.HOME | path join projects/golem/golem/sdks/effect)
+with-env { GOLEM_PROBE_CRASH: "1" } { node test/stream-stall-repro/probe.mjs }
+```
+
+This mode leaves input open, waits for the first `hello` echo, simulates a crash of that fresh
+agent, then appends `after` with producer sequence 1 and closes input. Expected: exactly
+`["hello", "after"]` and closed output. Observed: the second append succeeds, but there is no
+second echo or closure before the deadline. The reduced oplog has no snapshot entry. Replay
+stalls without AI, custom snapshots or a coordinator; the exact root cause is not established.
+The command intentionally exits nonzero while this defect persists.
