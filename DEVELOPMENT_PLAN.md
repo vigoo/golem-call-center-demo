@@ -698,3 +698,25 @@ Separate audio/control slots are worth exploring, but preserving the current int
 playback-ACK semantics makes this a protocol redesign rather than a drop-in optimization.
 This remark records a future option only: no implementation, schema migration or deployment
 change is authorized by it.
+
+## Follow-up — Golem internals and recovery walkthrough (completed)
+
+Extended the existing Golem-hosted interactive page to eight scenarios / 36 steps. New sections
+explain the Effect/QuickJS/WASM/WIT host boundary, oplog replay and lazy WebSocket reconstruction;
+map browser HTTP JSON, Durable Streams offsets/producer tuples, provider WSS and OpenAI SSE;
+and illustrate the optional reconstruction policy requested in
+[GOL-804](https://linear.app/golem-cloud/issue/GOL-804/add-an-opt-in-websocket-reconstruction-policy-that-reports-physical).
+The policy and provider-aware recovery steps are explicitly proposals, not implemented code.
+GOL-799 still blocks active replay verification; fixing it alone does not implement retained
+utterance replay, synthesis-context reconstruction or OpenAI provider-cursor resumption.
+
+Oracle reviewed the content against application/runtime sources and approved it with one
+localhost wording correction: these URLs assume browser and server are on the same machine.
+The bounded bug-finder found no bugs. All 36 steps pass in Chrome on the live local deployment,
+including deep links, invalid hashes, keyboard/history, proposal labels, CSP and no call/provider
+requests. The integration deployment also passed all steps before that wording correction.
+Desktop default and new-section screenshots and mobile views for each new section were inspected.
+All 76 unit tests and typecheck pass. README includes direct section links.
+Only static explanation assets, their browser test and documentation changed. The local/live and
+integration/mock deployments were updated without resetting or updating existing call agents;
+no SDK implementation, provider protocol, cloud deployment or additional ticket changed.

@@ -20,6 +20,8 @@ try {
     ["turn", "A spoken turn", 9], ["buffering", "Long reply", 3],
     ["interruption", "Barge-in", 4], ["delivery", "Delivery & retry", 3],
     ["durability", "State & recovery", 4],
+    ["runtime", "Golem replay internals", 5], ["protocols", "Endpoints & transports", 4],
+    ["recoveryPolicy", "Proposed session recovery", 4],
   ]) {
     await page.getByRole("button", { name: title, exact: true }).click();
     await page.waitForFunction(([id, title]) => location.hash === `#${id}/0` && document.getElementById("scenario-title").textContent === title, [id, title]);
@@ -38,6 +40,17 @@ try {
       if (id === "interruption" && index === 1) {
         assert.match(await page.locator("#description").textContent(), /TurnResumed.*no coordinator action/);
         await page.screenshot({ path: ".amp/in/artifacts/walkthrough-barge-in.png", fullPage: true });
+      }
+      if (id === "recoveryPolicy") assert.match(await page.locator("#state").textContent(), /PROPOSAL/);
+      if (id === "runtime" && index === 2) {
+        assert.match(await page.locator("#invariant").textContent(), /not reconstruct provider state/);
+        assert.match(await page.locator("#payload").textContent(), /no resend/);
+      }
+      if (id === "protocols" && index === 1) {
+        assert.match(await page.locator("#description").textContent(), /does not use SSE or a WebSocket to Golem/);
+      }
+      if ((id === "runtime" && index === 3) || (id === "protocols" && index === 2) || (id === "recoveryPolicy" && index === 0)) {
+        await page.screenshot({ path: `.amp/in/artifacts/walkthrough-${id}-detail.png`, fullPage: true });
       }
       if (index < length - 1) await page.locator("#next").click();
     }
@@ -72,9 +85,15 @@ try {
   await mobile.waitForFunction(() => document.getElementById("step-title").textContent === "Cancellation takes a fast lane");
   assert.ok(await mobile.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await mobile.screenshot({ path: ".amp/in/artifacts/walkthrough-mobile.png", fullPage: true });
+  for (const [id, step] of [["runtime", 3], ["protocols", 2], ["recoveryPolicy", 0]]) {
+    await mobile.goto(`${origin}/walkthrough#${id}/${step}`);
+    await mobile.waitForFunction(([id, step]) => document.querySelector("#scenarios [aria-pressed=true]") && document.getElementById("step-count").textContent.startsWith(`STEP ${step + 1} /`) && location.hash === `#${id}/${step}`, [id, step]);
+    assert.ok(await mobile.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await mobile.screenshot({ path: `.amp/in/artifacts/walkthrough-${id}-mobile.png`, fullPage: true });
+  }
   await page.goto(origin);
   await page.getByRole("link", { name: /interactive pipeline walkthrough/ }).waitFor();
   await page.screenshot({ path: ".amp/in/artifacts/console-walkthrough-link.png", fullPage: true });
   assert.deepEqual(errors, []);
-  console.log("Passed: all 23 walkthrough steps, boundary inspector, protocol examples, hash validation, deep links, keyboard/history, mobile layout, CSP and no call requests");
+  console.log("Passed: all 36 walkthrough steps, proposal labels, boundary inspector, protocol examples, hash validation, deep links, keyboard/history, mobile layout, CSP and no call requests");
 } finally { await browser.close(); }

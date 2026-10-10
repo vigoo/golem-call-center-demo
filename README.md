@@ -15,9 +15,15 @@ telephony service.
 
 Open [Inside the pipeline](http://call-center.localhost:19006/walkthrough) after local deployment,
 or `/walkthrough` on the integration hostname. The console footer links to it too.
-Five scenarios and 23 steps cover a spoken turn, paced playback, interruption, delivery/retry,
-and state/recovery. Select a boundary to inspect its ownership/source files, or use step links
-such as [`#buffering/2`](http://call-center.localhost:19006/walkthrough#buffering/2) to share a view.
+Eight scenarios and 36 steps cover a spoken turn, paced playback, interruption, delivery/retry,
+state/recovery, Golem replay internals, endpoints/transports, and proposed session recovery.
+Select a boundary to inspect its ownership/source files, or use step links such as
+[`#runtime/3`](http://call-center.localhost:19006/walkthrough#runtime/3) for current lazy reconnect,
+[`#protocols/0`](http://call-center.localhost:19006/walkthrough#protocols/0) for the endpoint map, and
+[`#recoveryPolicy/0`](http://call-center.localhost:19006/walkthrough#recoveryPolicy/0) for GOL-804.
+The policy and provider reconstruction steps are explicitly proposals, not implemented behavior.
+Fixing GOL-799 alone does not implement provider-session reconstruction. These localhost URLs
+require the browser and Golem to run on the same machine.
 The walkthrough is a static interactive explanation with representative protocol excerpts—not
 live telemetry. It requires no microphone or provider credentials. Run `node test/browser-walkthrough.mjs`
 against the integration deployment to check navigation, examples, CSP, mobile layout and no call requests.
