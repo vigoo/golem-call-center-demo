@@ -822,3 +822,19 @@ broader failure. No ticket state was changed.
 Provider-session recovery remains paused at this replay gate. Do not deploy partially wired
 reconstruction or claim end-to-end crash recovery; resume steps 2–4 after the fresh-control
 replay test can make progress. The non-crash application remains unchanged by this diagnostic.
+
+### Separate replay report and standalone reproduction — 2026-10-13
+
+The broader remaining failure is now tracked as
+[GOL-862](https://linear.app/golem-cloud/issue/GOL-862), not as the original GOL-799 defect.
+Checked release issues and active Golem Amp threads: GOL-709/#4131 and GOL-839/#4115
+may be relevant, but neither has verified coverage of this exact duplex scenario.
+GOL-799 remains Done and its reduced echo recovery passes.
+
+Attached a fixture-only source archive to GOL-862, with a standalone manifest, full handler,
+Nushell setup/runner, scoped host logs and oplog. It is not yet a minimal reduced agent.
+Built/typechecked it and tested a separate local deployment without Web assets or real keys.
+The standalone failure is intermittent: five crash runs produced four failures and one pass;
+non-crash controls passed. Both outcomes are retained, not just failures. One successful
+replay is therefore insufficient acceptance evidence. Oracle reviewed the reproducer and
+evidence; its packaging/provenance corrections were applied. No runtime fix is claimed.
