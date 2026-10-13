@@ -41,6 +41,7 @@ export class ElevenLabsTransportError extends Schema.TaggedError<ElevenLabsTrans
   {
     operation: Schema.Literals(["connect", "receive", "send", "close"]),
     reason: Schema.String,
+    sessionLost: Schema.optionalKey(Schema.Boolean),
     closeCode: Schema.optionalKey(Schema.Number),
   },
 ) {}
@@ -124,10 +125,12 @@ export interface ElevenLabsSocketFailureReason {
 export const elevenLabsSocketFailure = (
   operation: "connect" | "receive" | "send" | "close",
   socketReason: ElevenLabsSocketFailureReason,
+  sessionLost = false,
 ): ElevenLabsTransportError =>
   new ElevenLabsTransportError({
     operation,
     reason: `WebSocket ${socketReason._tag}`,
+    ...(sessionLost ? { sessionLost: true } : {}),
     ...(socketReason._tag === "SocketCloseError" && socketReason.code !== undefined
       ? { closeCode: socketReason.code }
       : {}),

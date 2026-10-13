@@ -12,7 +12,7 @@ const socketFailure = (
   operation: "connect" | "receive" | "send" | "close",
   error: Socket.SocketError,
 ): DeepgramTransportError =>
-  deepgramSocketFailure(operation, error.reason);
+  deepgramSocketFailure(operation, error.reason, Websocket.isSessionLost(error));
 
 export const DeepgramTransportLive = Layer.succeed(
   DeepgramTransport,

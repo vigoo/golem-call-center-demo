@@ -139,6 +139,47 @@ export const recordAudioChunk = (
   });
 };
 
+// Recovery creates another attempt for the committed user turn, not another turn.
+export const restartResponse = (
+  state: SavedCallState,
+  expectedResponseId: ResponseId,
+): Result.Result<StartedResponse, CallTransitionError> => {
+  if (state.activeResponseId !== expectedResponseId) {
+    return Result.fail({
+      _tag: "StaleResponse",
+      expected: state.activeResponseId,
+      received: expectedResponseId,
+    });
+  }
+  const previous = findResponse(state, expectedResponseId);
+  if (previous === undefined) {
+    return Result.fail({ _tag: "UnknownResponse", responseId: expectedResponseId });
+  }
+  const responseId = makeResponseId(state.nextResponseNumber);
+  return Result.succeed({
+    responseId,
+    userTurnId: previous.userTurnId,
+    state: {
+      ...state,
+      responses: [
+        ...updateResponse(state, expectedResponseId, (response) => ({
+          ...response,
+          status: "interrupted",
+        })),
+        {
+          responseId,
+          userTurnId: previous.userTurnId,
+          status: "active",
+          emittedThrough: null,
+          playedThrough: null,
+        },
+      ],
+      activeResponseId: responseId,
+      nextResponseNumber: state.nextResponseNumber + 1,
+    },
+  });
+};
+
 export const acknowledgePlayback = (
   state: SavedCallState,
   responseId: ResponseId,

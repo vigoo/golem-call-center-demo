@@ -179,6 +179,9 @@ describe("Deepgram Flux", () => {
     expect(clean).toMatchObject({ closeCode: 1000 });
     expect(policyViolation).toMatchObject({ closeCode: 1008 });
     expect(JSON.stringify([clean, policyViolation])).not.toContain("private-");
+    const lost = deepgramSocketFailure("send", { _tag: "SocketWriteError" }, true);
+    expect(lost.sessionLost).toBe(true);
+    expect(clean.sessionLost).toBeUndefined();
   });
 
   it.effect("rejects malformed and unknown provider messages without echoing payloads", () =>

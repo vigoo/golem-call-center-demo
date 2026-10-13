@@ -142,6 +142,7 @@ export class DeepgramTransportError extends Schema.TaggedError<DeepgramTransport
   {
     operation: Schema.Literals(["connect", "receive", "send", "close"]),
     reason: Schema.String,
+    sessionLost: Schema.optionalKey(Schema.Boolean),
     closeCode: Schema.optionalKey(Schema.Number),
   },
 ) {}
@@ -232,10 +233,12 @@ export interface DeepgramSocketFailureReason {
 export const deepgramSocketFailure = (
   operation: "connect" | "receive" | "send" | "close",
   socketReason: DeepgramSocketFailureReason,
+  sessionLost = false,
 ): DeepgramTransportError =>
   new DeepgramTransportError({
     operation,
     reason: `WebSocket ${socketReason._tag}`,
+    ...(sessionLost ? { sessionLost: true } : {}),
     ...(socketReason._tag === "SocketCloseError" && socketReason.code !== undefined
       ? { closeCode: socketReason.code }
       : {}),

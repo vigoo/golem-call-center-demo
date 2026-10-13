@@ -11,7 +11,8 @@ import {
 const socketFailure = (
   operation: "connect" | "receive" | "send" | "close",
   error: Socket.SocketError,
-): ElevenLabsTransportError => elevenLabsSocketFailure(operation, error.reason);
+): ElevenLabsTransportError =>
+  elevenLabsSocketFailure(operation, error.reason, Websocket.isSessionLost(error));
 
 export const ElevenLabsTransportLive = Layer.succeed(
   ElevenLabsTransport,

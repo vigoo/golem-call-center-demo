@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Result, Schema } from "effect";
-import { ResponseId } from "../src/call-protocol.js";
+import { ResponseId, ValidatedCallState } from "../src/call-protocol.js";
 import {
   acknowledgePlayback,
   endCall,
@@ -8,6 +8,7 @@ import {
   initialCallState,
   interruptResponse,
   recordAudioChunk,
+  restartResponse,
   startCall,
   startResponse,
 } from "../src/call-state.js";
@@ -124,5 +125,30 @@ describe("call state transitions", () => {
     expect(ended.activeResponseId).toBeNull();
     expect(ended.responses[0]?.status).toBe("interrupted");
     expect(Result.isFailure(startResponse(ended, "too late"))).toBe(true);
+  });
+
+  it("restarts an unfinished answer without recommitting its user turn or copying playback", () => {
+    const first = getSuccess(startResponse(getSuccess(startCall(initialCallState())), "help"));
+    const emitted = getSuccess(recordAudioChunk(first.state, first.responseId, 0));
+    const heard = getSuccess(acknowledgePlayback(emitted, first.responseId, 0));
+    const replacement = getSuccess(restartResponse(heard, first.responseId));
+    expect(replacement.responseId).toBe("response-2");
+    expect(replacement.userTurnId).toBe(first.userTurnId);
+    expect(replacement.state.turns).toEqual(first.state.turns);
+    expect(replacement.state.nextTurnNumber).toBe(2);
+    expect(replacement.state.responses).toMatchObject([
+      { status: "interrupted", playedThrough: 0 },
+      { status: "active", emittedThrough: null, playedThrough: null },
+    ]);
+    expect(() => Schema.decodeUnknownSync(ValidatedCallState)(replacement.state)).not.toThrow();
+    expect(Result.isFailure(restartResponse(replacement.state, first.responseId))).toBe(true);
+    const lateAck = getSuccess(acknowledgePlayback(replacement.state, first.responseId, 0));
+    expect(lateAck.activeResponseId).toBe(replacement.responseId);
+    expect(lateAck.responses[1]?.playedThrough).toBeNull();
+    expect(Result.isFailure(recordAudioChunk(replacement.state, first.responseId, 1))).toBe(true);
+    const finished = getSuccess(finishResponse(replacement.state, replacement.responseId, "answer"));
+    expect(() => Schema.decodeUnknownSync(ValidatedCallState)(finished)).not.toThrow();
+    expect(Result.isFailure(restartResponse(finished, replacement.responseId))).toBe(true);
+    expect(Result.isFailure(restartResponse(endCall(replacement.state), replacement.responseId))).toBe(true);
   });
 });
