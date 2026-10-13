@@ -21,7 +21,7 @@ try {
     ["interruption", "Barge-in", 4], ["delivery", "Delivery & retry", 3],
     ["durability", "State & recovery", 4],
     ["runtime", "Golem replay internals", 5], ["protocols", "Endpoints & transports", 4],
-    ["recoveryPolicy", "Proposed session recovery", 4],
+    ["recoveryPolicy", "Provider recovery", 4],
   ]) {
     await page.getByRole("button", { name: title, exact: true }).click();
     await page.waitForFunction(([id, title]) => location.hash === `#${id}/0` && document.getElementById("scenario-title").textContent === title, [id, title]);
@@ -41,7 +41,10 @@ try {
         assert.match(await page.locator("#description").textContent(), /TurnResumed.*no coordinator action/);
         await page.screenshot({ path: ".amp/in/artifacts/walkthrough-barge-in.png", fullPage: true });
       }
-      if (id === "recoveryPolicy") assert.match(await page.locator("#state").textContent(), /PROPOSAL/);
+      if (id === "recoveryPolicy") {
+        assert.match(await page.locator("#state").textContent(), /Implemented/);
+        await page.screenshot({ path: `.amp/in/artifacts/walkthrough-recovery-${index}.png`, fullPage: true });
+      }
       if (id === "runtime" && index === 2) {
         assert.match(await page.locator("#invariant").textContent(), /not reconstruct provider state/);
         assert.match(await page.locator("#payload").textContent(), /no resend/);
@@ -63,7 +66,7 @@ try {
   assert.match(await page.locator("#payload").textContent(), /"playbackAck".*"playedThrough":0/);
   await page.getByRole("button", { name: /State & recovery Snapshots/ }).click();
   assert.equal(await page.locator("#owner-title").textContent(), "State & recovery");
-  assert.match(await page.locator("#owner-detail").textContent(), /GOL-799/);
+  assert.match(await page.locator("#owner-detail").textContent(), /GOL-862/);
   await page.locator("#steps button").nth(2).click();
   await page.waitForFunction(() => document.getElementById("step-title").textContent === "Capture and append PCM");
   assert.match(await page.locator("#payload").textContent(), /Producer-Seq: 0/);
@@ -95,5 +98,5 @@ try {
   await page.getByRole("link", { name: /interactive pipeline walkthrough/ }).waitFor();
   await page.screenshot({ path: ".amp/in/artifacts/console-walkthrough-link.png", fullPage: true });
   assert.deepEqual(errors, []);
-  console.log("Passed: all 36 walkthrough steps, proposal labels, boundary inspector, protocol examples, hash validation, deep links, keyboard/history, mobile layout, CSP and no call requests");
+  console.log("Passed: all 36 walkthrough steps, implementation/acceptance labels, boundary inspector, protocol examples, hash validation, deep links, keyboard/history, mobile layout, CSP and no call requests");
 } finally { await browser.close(); }

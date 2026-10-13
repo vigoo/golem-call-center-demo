@@ -4,8 +4,10 @@ A durable Effect Golem call agent: Deepgram Flux → Effect AI / OpenAI Response
 streaming TTS. A static-only ephemeral Golem HTTP router hosts the same-origin browser console.
 See [`DEVELOPMENT_PLAN.md`](./DEVELOPMENT_PLAN.md) for the design and commit-by-commit history.
 
-**Status:** the protocol-fixture pipeline and browser work locally. Active-call crash recovery is
-blocked by [GOL-799](https://linear.app/golem-cloud/issue/GOL-799/effect-duplex-agentstream-replay-stalls-after-simulate-crash-with).
+**Status:** provider-aware reconstruction is implemented and unit-tested; the fixture pipeline
+and browser work locally. Strict active-call crash acceptance remains pending because broader
+replay intermittently stalls before reconstruction ([GOL-862](https://linear.app/golem-cloud/issue/GOL-862)).
+GOL-799's original reduced echo recovery now passes.
 Live recognition, LLM responses and audio playback were user-tested. Long-response buffering is
 also tested against protocol fixtures using real Chrome playback and Golem streams. Acoustic
 latency remains unmeasured. This is an unauthenticated development prototype, not a production
@@ -16,14 +18,17 @@ telephony service.
 Open [Inside the pipeline](http://call-center.localhost:19006/walkthrough) after local deployment,
 or `/walkthrough` on the integration hostname. The console footer links to it too.
 Eight scenarios and 36 steps cover a spoken turn, paced playback, interruption, delivery/retry,
-state/recovery, Golem replay internals, endpoints/transports, and proposed session recovery.
+state/recovery, Golem replay internals, endpoints/transports, and provider recovery.
 Select a boundary to inspect its ownership/source files, or use step links such as
 [`#runtime/3`](http://call-center.localhost:19006/walkthrough#runtime/3) for current lazy reconnect,
 [`#protocols/0`](http://call-center.localhost:19006/walkthrough#protocols/0) for the endpoint map, and
 [`#recoveryPolicy/0`](http://call-center.localhost:19006/walkthrough#recoveryPolicy/0) for GOL-804.
-The policy and provider reconstruction steps are explicitly proposals, not implemented behavior.
-Fixing GOL-799 alone does not implement provider-session reconstruction. These localhost URLs
-require the browser and Golem to run on the same machine.
+The transports opt into `report-connection-loss`; default automatic reconnect remains available
+in Golem. Recognition restores bounded uncommitted PCM; unfinished synthesis gets a new response
+attempt, reusing complete text or regenerating incomplete text. The walkthrough distinguishes
+implemented application logic from pending crash/live-provider acceptance. These localhost URLs
+require the browser and Golem to run on the same machine. The earlier Amp portal is a static
+copy of the older walkthrough, not an automatically updated deployment.
 The walkthrough is a static interactive explanation with representative protocol excerpts—not
 live telemetry. It requires no microphone or provider credentials. Run `node test/browser-walkthrough.mjs`
 against the integration deployment to check navigation, examples, CSP, mobile layout and no call requests.
@@ -167,10 +172,31 @@ node test/recovery-smoke.mjs
 
 Delayed reading (1.5 seconds), provider failures and explicit interruption during STT/OpenAI/TTS
 are tested separately from simulated crashes. The script asserts failures rather than hiding them.
-Currently all three crash scenarios stall; the command exits nonzero. Logs/events go to `.amp/in/`.
+The fixed crash batch (three fresh agents per stage) produced one STT continuation under earlier,
+weaker checks and eight stalls. That continuation is not a strict-check acceptance pass. The
+runner now requires fresh-session evidence, matching text/audio/completion, a mandatory ACK,
+a distinct second committed turn and explicit hangup closure. It exits nonzero on any failure,
+including failed cleanup; evidence goes to unique `.amp/in/recovery-runs/<call-id>/` directories.
 Select a scenario with `with-env { GOLEM_TEST_SCENARIO: "interrupt-openai" } { node test/recovery-smoke.mjs }`.
+Use a fixed `GOLEM_TEST_ATTEMPTS` from 1–3, never retry until green. Comma-separated scenario names
+are accepted. `continue-call` is the non-crash control for two distinct answers, ACKs and closure.
 
-Observed on CLI/server `v1.6.0-rc1-28-g5948c58e5f` and local SDK at Golem revision
+On CLI `v1.6.0-rc2-25-gfd734d5670` with the rebuilt local SDK, 99 unit tests, typecheck,
+normal deployment smoke, provider-failure/interruption and strict non-crash continuation pass.
+All six browser buffering scenarios also pass on a fresh isolated server using controlled
+Web Audio capture; automated native microphone permission remains unverified. An earlier
+browser hangup timeout followed a recorded memory-pressure restart, not a failure-free stall.
+One fixed fresh-server crash attempt per provider stage still timed out without an OOM;
+these failures and their unconfirmed hangup cleanup are retained, not counted as acceptance.
+Deepgram uses ten seconds of retained PCM and at most 1.25× replay; overflow asks for a repeat
+and suppresses the damaged fragment. TTS recovery fences physical epochs, clears old playback,
+and preserves old ACK/audio records. Complete text is reused; incomplete foreground OpenAI text
+is regenerated, not suffix-spliced. Ordinary provider errors are not unlimited reconnect triggers.
+Repeated host crashes, deployed partial-playback/ACK races, deployed overflow and real-provider
+crash compatibility remain unverified. An answer may repeat; browser reload and exactly-once
+hearing are not supported. See the plan's dated checkpoints for retained evidence and reviews.
+
+Historical observations on CLI/server `v1.6.0-rc1-28-g5948c58e5f` and local SDK at Golem revision
 `5948c58e5f682823f34f53083db12f9f0b1e456d`:
 
 - GOL-742's missing-span trap and GOL-750's live-input stall are fixed. Repeated fixture-backed calls and

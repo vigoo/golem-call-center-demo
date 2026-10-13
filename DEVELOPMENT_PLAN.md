@@ -931,3 +931,43 @@ reach those phases. Unit tests cover the corresponding application boundaries; t
 substitute for host-crash evidence. Live-provider crash compatibility remains unverified too.
 Stop this fixed batch rather than chase a successful certificate. Oracle approved the fixture
 changes and the final harness corrections; commit this as partial acceptance evidence.
+
+### Walkthrough and fresh-server browser verification — 2026-10-13
+
+The walkthrough now explains implemented optional session-loss reporting, bounded recognition
+replay, new synthesis attempts and foreground answer regeneration. It distinguishes these
+application mechanisms from pending strict host-crash/live-provider acceptance, and replaces
+the obsolete GOL-799 blocker with GOL-862. All 36 deployed walkthrough steps, deep links,
+navigation, CSP, no-provider-request checks and mobile layout pass; desktop/default, all four
+recovery steps and mobile captures were inspected. The older Amp portal remains an older static
+copy; the current walkthrough is served by the integration Golem deployment.
+
+Automated Chrome's native microphone request remained pending before any backend connection.
+Using a controlled Web Audio MediaStream instead exercises the real AudioWorklet, browser
+capture/transport, playback and ACK path, but does not verify physical microphone permission.
+The first long-reply run timed out during hangup. Oracle traced this to a recorded memory-growth
+admission failure followed by automatic agent restart/replay, not a failure-free input stall:
+oplog entry 758 records Out of memory after 53 PCM frames. Browser logs after that point reflected
+already-published audio paced through playback, not continued guest progress. No application
+teardown change was justified by that evidence.
+
+A fresh isolated server process, new data directory and explicit 8GiB admission budget were used
+without deleting old data. All six unchanged browser buffering scenarios then passed: long
+12.25-second audio, 100-chunk burst, interrupt, barge-in, provider failure and hangup. Scheduled
+look-ahead stayed below four seconds; completed chunks were ACKed only after natural playback.
+The fresh log contains no memory-admission failure. Logs are retained in
+`.amp/in/browser-buffering-fresh.log` and `.amp/in/local-golem/browser-fresh-server.log`.
+
+One predeclared crash attempt per provider stage on that fresh server still failed before a
+replacement connection or answer, with persisted hangup unable to close output. No OOM was
+recorded in this batch. Each failure remains a failure, with its provider journal/output/crash
+and cleanup evidence under `.amp/in/recovery-runs/`; the aggregate log is
+`.amp/in/recovery-crash-fresh.log`. This separates the observed replay-liveness problem from the
+earlier browser memory-pressure restart, without claiming a proven underlying cause. Strict
+crash acceptance remains pending; do not keep retrying for a green result. Typecheck and all
+99 unit tests pass. Only the isolated integration deployment was updated; no live deployment,
+agent reset, push or cloud deployment was performed.
+
+Oracle approved this documentation/walkthrough checkpoint with no blockers, explicitly not
+crash acceptance. Additional fresh-server evidence and the memory-pressure distinction were
+commented on the existing GOL-862 (still Todo), rather than opening a duplicate issue.

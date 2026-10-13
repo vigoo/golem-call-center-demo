@@ -13,7 +13,7 @@
     <header><div><p class="eyebrow">GOLEM / VOICE LAB / UNDER THE HOOD</p><h1>Inside the pipeline</h1></div>
       <a class="back-link" href="/">Open call console ↗</a></header>
     <p class="intro">Follow a spoken turn across the browser, a durable agent, and three providers.<br>
-      Explore transport endpoints, Golem replay internals, and the proposed provider-session recovery policy.</p>
+      Explore transport endpoints, Golem replay internals, and implemented provider recovery with its remaining acceptance limits.</p>
     <p class="simulation-note">INTERACTIVE EXPLANATION · Illustrative payloads, not a live trace. No microphone, credentials or provider calls.</p>
     <noscript><p>This walkthrough needs JavaScript for step navigation. The README describes the protocols and limits.</p></noscript>
     <nav id="scenarios" class="scenarios" aria-label="Walkthrough scenarios"></nav>
@@ -38,11 +38,12 @@
       </section>
     </div>
     <footer>Playback ACK means a whole original audio chunk completed naturally—not that it was downloaded or scheduled.<br>
-      This remains a development prototype. Active-call crash recovery is blocked by
-      <a href="https://linear.app/golem-cloud/issue/GOL-799/effect-duplex-agentstream-replay-stalls-after-simulate-crash-with">GOL-799</a>.
-      Optional session-loss reporting is proposed in
-      <a href="https://linear.app/golem-cloud/issue/GOL-804/add-an-opt-in-websocket-reconstruction-policy-that-reports-physical">GOL-804</a>;
-      provider-aware recovery is not implemented here.
+      This remains a development prototype. Strict active-call crash acceptance is pending;
+      intermittent pre-reconstruction replay stalls are tracked by
+      <a href="https://linear.app/golem-cloud/issue/GOL-862">GOL-862</a>.
+      The optional session-loss policy from
+      <a href="https://linear.app/golem-cloud/issue/GOL-804/add-an-opt-in-websocket-reconstruction-policy-that-reports-physical">GOL-804</a>
+      is implemented and used here. Provider reconstruction is not identical-session or exactly-once hearing recovery.
       <a href="/openapi.yaml">View deployed OpenAPI</a>.</footer>
   </main>
 </body>
