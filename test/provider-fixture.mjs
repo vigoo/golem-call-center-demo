@@ -2,7 +2,7 @@
 import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 
-const newScenario = (settings = {}) => ({ settings, counts: { stt: 0, openai: 0, elevenlabs: 0 }, held: new Map(), resources: new Set(), controls: new Set(), released: false });
+const newScenario = (settings = {}) => ({ settings, counts: { stt: 0, openai: 0, elevenlabs: 0 }, connections: { stt: 0, elevenlabs: 0 }, journal: [], held: new Map(), resources: new Set(), controls: new Set(), released: false });
 let scenario = newScenario();
 const deliver = (state, stage, owner, transmit) => {
   if (state.settings.holdStage === stage && !state.released) state.held.set(owner, { stage, transmit });
@@ -26,7 +26,7 @@ const server = createServer(async (request, response) => {
     }
     const pending = { stt: 0, openai: 0, elevenlabs: 0 };
     for (const item of scenario.held.values()) pending[item.stage]++;
-    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ...scenario.counts, pending })); return;
+    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ...scenario.counts, connections: scenario.connections, journal: scenario.journal, pending })); return;
   }
   if (request.url !== "/v1/responses") {
     response.writeHead(404).end();
@@ -37,6 +37,7 @@ const server = createServer(async (request, response) => {
   response.on("close", () => { state.resources.delete(dispose); state.held.delete(response); });
   for await (const _ of request) { /* consume the request body */ }
   state.counts.openai++;
+  state.journal.push({ stage: "openai", operation: "request", attempt: state.counts.openai });
   await new Promise((resolve) => {
     response.once("close", resolve);
     deliver(state, "openai", response, resolve);
@@ -63,6 +64,11 @@ sockets.on("connection", (socket, request) => {
   const deepgram = request.url.startsWith("/v2/listen");
   const state = scenario;
   const settings = state.settings;
+  const stage = deepgram ? "stt" : "elevenlabs";
+  const connection = ++state.connections[stage];
+  state.journal.push({ stage, operation: "connect", connection });
+  const contexts = new Set();
+  let audioBytes = 0;
   const dispose = () => socket.terminate(); state.resources.add(dispose);
   const send = (stage, event) => {
     const transmit = () => { if (socket.readyState === 1) socket.send(JSON.stringify(event)); };
@@ -70,7 +76,7 @@ sockets.on("connection", (socket, request) => {
     const previous = state.held.get(socket)?.transmit;
     deliver(state, stage, socket, previous ? () => { previous(); transmit(); } : transmit);
   };
-  socket.on("close", () => { state.resources.delete(dispose); state.held.delete(socket); });
+  socket.on("close", () => { state.resources.delete(dispose); state.held.delete(socket); state.journal.push({ stage, operation: "close", connection }); });
   let sequence = 0;
   let lastTurn = 0;
   if (deepgram) socket.send(JSON.stringify({
@@ -87,6 +93,9 @@ sockets.on("connection", (socket, request) => {
   }
   socket.on("message", (bytes, binary) => {
     if (deepgram && binary) {
+      const start = audioBytes / 32000;
+      audioBytes += bytes.length;
+      state.journal.push({ stage, operation: "audio", connection, bytes: bytes.length, audioBytes });
       // A continuous microphone should not invent a new turn for every 80 ms frame.
       if (settings.singleTurn && lastTurn) return;
       if (Date.now() - lastTurn < 1000) return;
@@ -95,8 +104,9 @@ sockets.on("connection", (socket, request) => {
       if (settings.failStage === "stt") { socket.close(1011, "Fixture failure"); return; }
       send("stt", {
         type: "TurnInfo", request_id: "fixture", sequence_id: sequence++,
-        event: "EndOfTurn", turn_index: sequence, transcript: "Hello fixture",
-        words: [], audio_window_start: 0, audio_window_end: 0.08,
+        event: "EndOfTurn", turn_index: sequence,
+        transcript: bytes.length >= 2 && bytes.readInt16LE(0) === 1234 ? "Second fixture turn" : "Hello fixture",
+        words: [], audio_window_start: start, audio_window_end: audioBytes / 32000,
         end_of_turn_confidence: 0.99,
       });
       return;
@@ -106,7 +116,19 @@ sockets.on("connection", (socket, request) => {
       if (message.type === "CloseStream") socket.close();
       return;
     }
+    if (message.close_socket) { socket.close(); return; }
+    if (message.text === " " && message.voice_settings) {
+      if (contexts.has(message.context_id)) { socket.close(1008, "Context already initialized"); return; }
+      contexts.add(message.context_id);
+      state.journal.push({ stage, operation: "initialize", connection, responseId: message.context_id });
+      return;
+    }
+    if (!contexts.has(message.context_id)) {
+      state.journal.push({ stage, operation: "invalid-context", connection, responseId: message.context_id });
+      socket.close(1008, "Context not initialized on this socket"); return;
+    }
     if (message.text?.trim()) {
+      state.journal.push({ stage, operation: "text", connection, responseId: message.context_id, text: message.text });
       state.counts.elevenlabs++;
       if (settings.failStage === "elevenlabs") { socket.close(1011, "Fixture failure"); return; }
       const samples = Buffer.alloc(Math.round(32000 * (settings.audioSeconds ?? .1)));
@@ -117,8 +139,10 @@ sockets.on("connection", (socket, request) => {
         send("elevenlabs", { contextId: message.context_id, audio: samples.toString("base64"), isFinal: null });
       }
     }
-    if (message.close_context) send("elevenlabs", { contextId: message.context_id, isFinal: true });
-    if (message.close_socket) socket.close();
+    if (message.close_context) {
+      contexts.delete(message.context_id);
+      send("elevenlabs", { contextId: message.context_id, isFinal: true });
+    }
   });
 });
 server.listen(19110, "127.0.0.1", () => console.log("Provider fixtures ready on 19110"));

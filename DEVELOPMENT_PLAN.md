@@ -896,3 +896,38 @@ replacement cases. Oracle reviewed the fixes and found no remaining focused bloc
 local-SDK build, isolated mock deployment and transcript/audio/ACK/hangup smoke pass. This is
 not proof of host-crash or live-provider reconstruction: strict fixture and bounded deployed
 crash-matrix validation remain next. The normal live deployment has not been changed.
+
+### Strict fixture and deployed recovery matrix — 2026-10-13
+
+The fixture now rejects text/flush/close for contexts not initialized on that physical
+synthesis socket, records connection epochs and protocol events, and advances recognition
+timestamps by received PCM bytes. A distinct second-input sample marker produces a distinct
+transcript. The recovery runner preserves every fresh-agent attempt in a unique directory under
+`.amp/in/recovery-runs/`, including provider journal, output events, CLI crash output and failure
+details. Attempts are fixed in advance (1–3), not repeated until green; failed cleanup remains
+failed. Controls can be selected as a comma-separated `GOLEM_TEST_SCENARIO` value.
+
+After Oracle's acceptance review, both answers must contain matching text, nonempty audio and
+completion for their own response ID. The first ACK is mandatory. The next answer requires a
+new committed transcript after the second-input boundary; the call must stay open until explicit
+hangup. Negative synthetic controls reject missing audio, a premature extra completion,
+completion accompanied by early closure, and mixed old/new response IDs. The deployed no-crash
+continuation control passes, as do slow reader, three provider-failure and three interruption
+controls. These are harness and normal-call checks, not crash acceptance.
+
+A fixed batch of three fresh calls per crash stage produced one STT continuation and eight
+stalls (STT 1/3, OpenAI 0/3, ElevenLabs 0/3). The STT continuation showed fresh recognition PCM,
+two synthesized answers, ACKs and hangup closure, but ran before the strengthened second-turn
+assertions: it is not a strict-check acceptance pass. Failed attempts showed no replacement
+provider connections. The independent replay-control probe also stalled; persisted hangup/input
+closure did not close its output. Scoped logs and an STT oplog are retained beside those attempts.
+This matches the observed pre-reconstruction replay-liveness pattern tracked by GOL-862; the
+underlying runtime/guest scheduling cause remains unisolated. Never relabel arbitrary failures
+as that issue or count a timeout as successful recovery.
+
+Strict crash acceptance, repeated crashes on one continuing call, deployed partial-playback/ACK
+races and deployed utterance-overflow recovery remain unverified because failed attempts cannot
+reach those phases. Unit tests cover the corresponding application boundaries; they do not
+substitute for host-crash evidence. Live-provider crash compatibility remains unverified too.
+Stop this fixed batch rather than chase a successful certificate. Oracle approved the fixture
+changes and the final harness corrections; commit this as partial acceptance evidence.
