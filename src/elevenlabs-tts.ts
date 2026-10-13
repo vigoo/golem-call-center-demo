@@ -1,4 +1,4 @@
-import { Context, Effect, Exit, Layer, Ref, Schema, Scope, Semaphore } from "effect";
+import { Context, Deferred, Effect, Exit, Layer, Ref, Schema, Scope, Semaphore } from "effect";
 import type { ResponseId } from "./call-protocol.js";
 
 const ContextId = Schema.NonEmptyString;
@@ -113,6 +113,8 @@ export interface ElevenLabsSession {
     responseId: ResponseId,
   ) => Effect.Effect<void, ElevenLabsTransportError>;
   readonly receive: Effect.Effect<ElevenLabsEvent, ElevenLabsProtocolError | ElevenLabsTransportError>;
+  // Retire a lost physical connection without writing to its obsolete socket.
+  readonly retireSocket: Effect.Effect<void>;
   readonly closeSocket: Effect.Effect<void, ElevenLabsTransportError>;
 }
 
@@ -231,6 +233,15 @@ export class ElevenLabsTts extends Context.Service<
             const wireClosedContexts = yield* Ref.make<ReadonlySet<ResponseId>>(new Set());
             const socketState = yield* Ref.make<"open" | "closing" | "closed">("open");
             const commandLock = yield* Semaphore.make(1);
+            const retired = yield* Deferred.make<void>();
+            const sendWire = Effect.fnUntraced(function*(text: string) {
+              const lost = new ElevenLabsTransportError({ operation: "send", reason: "Physical synthesis session retired", sessionLost: true });
+              if ((yield* Ref.get(socketState)) === "closed") return yield* lost;
+              return yield* Effect.raceFirst(
+                connection.sendText(text).pipe(Effect.interruptible),
+                Deferred.await(retired).pipe(Effect.andThen(Effect.fail(lost))),
+              );
+            });
 
             const startContextUnlocked = Effect.fn(
               "ElevenLabsTts.startContext",
@@ -249,7 +260,7 @@ export class ElevenLabsTts extends Context.Service<
                   contextError("start", responseId, "already-started"),
                 );
               }
-              yield* connection.sendText(contextStartMessage(responseId, options)).pipe(
+              yield* sendWire(contextStartMessage(responseId, options)).pipe(
                 Effect.onExit((exit) =>
                   Exit.isFailure(exit)
                     ? Ref.update(contexts, (current) => {
@@ -278,7 +289,7 @@ export class ElevenLabsTts extends Context.Service<
               if (current.get(responseId) !== "open") {
                 return yield* Effect.fail(contextError("send", responseId, "not-open"));
               }
-              yield* connection.sendText(JSON.stringify({ context_id: responseId, text }));
+              yield* sendWire(JSON.stringify({ context_id: responseId, text }));
             });
             const sendText: ElevenLabsSession["sendText"] = (responseId, text) =>
               commandLock.withPermit(sendTextUnlocked(responseId, text));
@@ -302,11 +313,10 @@ export class ElevenLabsTts extends Context.Service<
                 return yield* Effect.fail(contextError("finish", responseId, "not-open"));
               }
               yield* Effect.uninterruptible(
-                connection
-                  .sendText(JSON.stringify({ context_id: responseId, flush: true }))
+                sendWire(JSON.stringify({ context_id: responseId, flush: true }))
                   .pipe(
                     Effect.andThen(
-                      connection.sendText(
+                      sendWire(
                         JSON.stringify({ context_id: responseId, close_context: true }),
                       ),
                     ),
@@ -339,7 +349,7 @@ export class ElevenLabsTts extends Context.Service<
                           Effect.gen(function* () {
                             if ((yield* Ref.get(socketState)) !== "open") return;
                             if ((yield* Ref.get(wireClosedContexts)).has(responseId)) return;
-                            yield* connection.sendText(
+                            yield* sendWire(
                               JSON.stringify({ context_id: responseId, close_context: true }),
                             );
                             yield* Ref.update(wireClosedContexts, (current) =>
@@ -386,6 +396,7 @@ export class ElevenLabsTts extends Context.Service<
 
             const closeSocket: ElevenLabsSession["closeSocket"] = Effect.uninterruptible(
               Effect.gen(function* () {
+                if ((yield* Ref.get(socketState)) === "closed") return;
                 yield* Ref.update(socketState, (state) =>
                   state === "open" ? "closing" : state,
                 );
@@ -398,14 +409,18 @@ export class ElevenLabsTts extends Context.Service<
                     yield* Ref.update(contexts, (current) =>
                       new Map(Array.from(current.keys(), (id) => [id, "closed" as const])),
                     );
-                    yield* connection.sendText(JSON.stringify({ close_socket: true }));
+                    yield* sendWire(JSON.stringify({ close_socket: true }));
                     yield* Ref.set(socketState, "closed");
                   }),
                 );
               }),
             );
 
-            yield* Effect.addFinalizer(() => closeSocket.pipe(Effect.ignore));
+            const retireSocket = Ref.set(socketState, "closed").pipe(
+              Effect.andThen(Deferred.succeed(retired, undefined)), Effect.asVoid,
+            );
+            // Implicit scope teardown cannot depend on a provider accepting a graceful close.
+            yield* Effect.addFinalizer(() => retireSocket);
 
             return {
               startContext,
@@ -413,6 +428,7 @@ export class ElevenLabsTts extends Context.Service<
               finishContext,
               closeContext,
               receive,
+              retireSocket,
               closeSocket,
             } satisfies ElevenLabsSession;
           }),

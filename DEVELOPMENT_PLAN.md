@@ -873,3 +873,26 @@ The smoke verifies transcript/audio/completion/ACK/hangup/output closure, not li
 crash-recovery compatibility. ElevenLabs/OpenAI replacement and the deployed crash matrix remain
 the next separate steps. Only the integration deployment was updated; existing agents were not
 reset or updated and the normal live deployment remains unchanged.
+
+### TTS replacement and answer reconstruction — 2026-10-13
+
+ElevenLabs now opts into explicit physical-session-loss reporting. One owner arbitrates
+send/receive loss and hangup, retires the old epoch, and hands reconstruction to a dedicated
+worker. An unfinished response is interrupted and its browser playback cleared before a new
+attempt ID for the same committed user turn is launched. Complete generated text is reused;
+incomplete text is regenerated through the foreground OpenAI request, never suffix-spliced.
+Old audio/ACK records remain intact and retired socket events cannot complete the new attempt.
+Idle completed playback is not discarded. Three consecutive reconstruction losses terminate
+recovery; ordinary provider errors remain errors rather than reconnect triggers.
+
+Review/testing exposed blocked-flush teardown races. Hangup now retires before joining,
+invalidation cleanup runs in a dedicated generation scope outside control ingestion, and
+implicit adapter teardown locally retires rather than depending on a graceful provider write.
+Output teardown revokes ownership before closing that generation scope, including cancellation
+inside a downstream consumer callback. Explicit graceful socket closure remains available.
+
+99 unit tests and typecheck pass, including real-adapter blocked flush/close and unpublished
+replacement cases. Oracle reviewed the fixes and found no remaining focused blockers. The
+local-SDK build, isolated mock deployment and transcript/audio/ACK/hangup smoke pass. This is
+not proof of host-crash or live-provider reconstruction: strict fixture and bounded deployed
+crash-matrix validation remain next. The normal live deployment has not been changed.

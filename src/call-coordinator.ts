@@ -2,12 +2,14 @@ import {
   Cause,
   Deferred,
   Effect,
+  Exit,
   Fiber,
   Queue,
   Redacted,
   Ref,
   Result,
   Schema,
+  Scope,
   Semaphore,
   Stream,
 } from "effect";
@@ -26,6 +28,7 @@ import {
   finishResponse,
   interruptResponse,
   recordAudioChunk,
+  restartResponse,
   startCall,
   startResponse,
 } from "./call-state.js";
@@ -34,6 +37,8 @@ import {
   type ElevenLabsEvent,
   ElevenLabsTts,
   type ElevenLabsOptions,
+  type ElevenLabsSession,
+  type ElevenLabsError,
 } from "./elevenlabs-tts.js";
 import { ResponseGenerator } from "./response-generation.js";
 
@@ -61,6 +66,7 @@ interface ResponseFailure {
 interface StartedGeneration {
   readonly responseId: ResponseId;
   readonly turns: SavedCallState["turns"];
+  readonly completeText?: string;
 }
 
 type PendingOutput =
@@ -100,10 +106,12 @@ export const coordinateCall = <E>(
       const queuedAudioBytes = yield* Ref.make(0);
       const currentGeneration = yield* Ref.make<CurrentGeneration | null>(null);
       const completedText = yield* Ref.make<ReadonlyMap<ResponseId, string>>(new Map());
+      const textDelivered = yield* Ref.make<ReadonlySet<ResponseId>>(new Set());
       const nextAudioSequence = yield* Ref.make<ReadonlyMap<ResponseId, number>>(new Map());
       const clearedPlayback = yield* Ref.make<ReadonlySet<ResponseId>>(new Set());
       const interruptConfirmationPending = yield* Ref.make(false);
       const shuttingDown = yield* Ref.make(false);
+      const consecutiveTtsLosses = yield* Ref.make(0);
       const onStateChange = options.onStateChange ?? (() => Effect.void);
 
       const publicationFiber = yield* Stream.fromQueue(controlPublications).pipe(
@@ -160,8 +168,17 @@ export const coordinateCall = <E>(
               }) as const,
           ),
         );
-      const ttsSession = yield* tts
-        .open(Redacted.value(options.elevenLabsApiKey), options.elevenLabs)
+      const parentScope = yield* Effect.scope;
+      const openTts = Effect.fnUntraced(function*() {
+        const scope = yield* Scope.fork(parentScope);
+        const session = yield* tts.open(Redacted.value(options.elevenLabsApiKey), options.elevenLabs).pipe(
+          Scope.provide(scope), Effect.onError(() => Scope.close(scope, Exit.void)),
+        );
+        return { _tag: "Ready" as const, scope, session, retired: yield* Deferred.make<void>() };
+      });
+      type PhysicalTts = { readonly _tag: "Ready"; readonly scope: Scope.Closeable; readonly session: ElevenLabsSession; readonly retired: Deferred.Deferred<void> };
+      type ReconnectingTts = { readonly _tag: "Reconnecting"; readonly ready: Deferred.Deferred<void> };
+      const initialTts = yield* openTts()
         .pipe(
           Effect.onError(() => deepgramSession.closeStream.pipe(Effect.ignore)),
           Effect.mapError(
@@ -172,6 +189,56 @@ export const coordinateCall = <E>(
               }) as const,
           ),
         );
+      const ttsOwner = yield* Ref.make<PhysicalTts | ReconnectingTts | { readonly _tag: "Closed" }>(initialTts);
+      // Dynamic workers close only after the outer output finalizer retires TTS.
+      const generationScope = yield* Scope.fork(parentScope);
+      const reconstructions = yield* Queue.bounded<{
+        readonly old: PhysicalTts;
+        readonly waiting: ReconnectingTts;
+        readonly generation: StartedGeneration | null;
+        readonly previousResponseId: ResponseId | null;
+        readonly fiber: Fiber.Fiber<void> | null;
+      }, Cause.Done>(1);
+      const awaitTts = Effect.suspend((): Effect.Effect<PhysicalTts> => Effect.gen(function*() {
+        const owned = yield* Ref.get(ttsOwner);
+        if (owned._tag === "Ready") return owned;
+        if (owned._tag === "Closed") return yield* Effect.interrupt;
+        yield* Deferred.await(owned.ready);
+        return yield* awaitTts;
+      }));
+
+      const reportTtsLoss = Effect.fnUntraced(function*(physical: PhysicalTts) {
+        const waiting: ReconnectingTts = { _tag: "Reconnecting", ready: yield* Deferred.make<void>() };
+        const won = yield* Ref.modify(ttsOwner, (owned) => owned === physical
+          ? [true, waiting] as const : [false, owned] as const);
+        if (!won) return;
+        const restart = yield* stateLock.withPermit(Effect.gen(function*() {
+          const previous = yield* Ref.get(state);
+          const id = previous.activeResponseId;
+          if (id === null || (yield* Ref.get(shuttingDown))) return { generation: null, previousResponseId: null, fiber: null };
+          const result = restartResponse(previous, id);
+          if (Result.isFailure(result)) return { generation: null, previousResponseId: null, fiber: null };
+          const completeText = (yield* Ref.get(completedText)).get(id);
+          yield* saveState(result.success.state);
+          const running = yield* Ref.getAndSet(currentGeneration, null);
+          yield* Ref.update(completedText, (texts) => {
+            const copy = new Map(texts);
+            copy.delete(id);
+            if (completeText !== undefined) copy.set(result.success.responseId, completeText);
+            return copy;
+          });
+          return {
+            generation: { responseId: result.success.responseId, turns: result.success.state.turns,
+              ...(completeText === undefined ? {} : { completeText }) },
+            previousResponseId: id, fiber: running?.fiber ?? null,
+          };
+        }));
+        yield* physical.session.retireSocket;
+        yield* Deferred.succeed(physical.retired, undefined);
+        // Reporters never join the generation that may itself be reporting this loss.
+        const handedOff = yield* Effect.sync(() => Queue.offerUnsafe(reconstructions, { old: physical, waiting, ...restart }));
+        if (!handedOff) yield* Scope.close(physical.scope, Exit.void);
+      }, Effect.uninterruptible);
 
       const invalidateResponse = Effect.fnUntraced(function*(
         expectedResponseId: ResponseId | undefined,
@@ -234,8 +301,12 @@ export const coordinateCall = <E>(
         if (invalidated._tag !== "Invalidated") return invalidated;
 
         const { responseId, fiber } = invalidated;
-        if (interruptFiber && fiber !== null) yield* Fiber.interrupt(fiber);
-        yield* ttsSession.closeContext(responseId).pipe(Effect.ignore);
+        const owned = yield* Ref.get(ttsOwner);
+        // Cleanup must not prevent the input consumer from reaching a subsequent hangup.
+        yield* Effect.gen(function*() {
+          if (interruptFiber && fiber !== null) yield* Fiber.interrupt(fiber);
+          if (owned._tag === "Ready") yield* owned.session.closeContext(responseId).pipe(Effect.ignore);
+        }).pipe(Effect.forkIn(generationScope, { startImmediately: true }));
         return {
           _tag: "Invalidated",
           responseId,
@@ -293,18 +364,18 @@ export const coordinateCall = <E>(
 
       const runGeneration = Effect.fnUntraced(function*(started: StartedGeneration) {
         const { responseId } = started;
+        const physical = yield* awaitTts;
+        const ttsSession = physical.session;
+        const synthesisFailure = (reason: string) => (error: ElevenLabsError) =>
+          error._tag === "ElevenLabsTransportError" && error.sessionLost ? reportTtsLoss(physical).pipe(Effect.andThen(Effect.interrupt))
+            : Effect.fail({ stage: "elevenlabs" as const, reason });
         const isCurrent = stateLock.withPermit(
           Ref.get(state).pipe(Effect.map((current) => current.activeResponseId === responseId)),
         );
         if (!(yield* isCurrent)) return;
 
         const opened = yield* ttsSession.startContext(responseId).pipe(
-          Effect.mapError(
-            (): ResponseFailure => ({
-              stage: "elevenlabs",
-              reason: "Speech synthesis context failed to start",
-            }),
-          ),
+          Effect.catch(synthesisFailure("Speech synthesis context failed to start")),
           Effect.result,
         );
         if (Result.isFailure(opened)) {
@@ -318,8 +389,9 @@ export const coordinateCall = <E>(
 
         let text = "";
         let completed = false;
-        const generated = yield* generator
-          .stream(options.systemPrompt, started.turns)
+        const generated = yield* (started.completeText === undefined
+          ? generator.stream(options.systemPrompt, started.turns)
+          : Stream.make({ _tag: "TextDelta" as const, text: started.completeText }, { _tag: "Completed" as const }))
           .pipe(
             Stream.mapError(
               (): ResponseFailure => ({
@@ -333,27 +405,19 @@ export const coordinateCall = <E>(
                 if (event._tag === "TextDelta") {
                   text += event.text;
                   yield* ttsSession.sendText(responseId, event.text).pipe(
-                    Effect.mapError(
-                      (): ResponseFailure => ({
-                        stage: "elevenlabs",
-                        reason: "Speech synthesis text streaming failed",
-                      }),
-                    ),
+                    Effect.catch(synthesisFailure("Speech synthesis text streaming failed")),
                   );
                   return;
                 }
 
                 completed = true;
-                yield* Ref.update(completedText, (current) =>
-                  new Map(current).set(responseId, text),
-                );
+                yield* stateLock.withPermit(Effect.gen(function*() {
+                  if ((yield* Ref.get(state)).activeResponseId !== responseId) return yield* Effect.interrupt;
+                  yield* Ref.update(completedText, (current) => new Map(current).set(responseId, text));
+                  yield* Ref.update(textDelivered, (current) => new Set(current).add(responseId));
+                }));
                 yield* ttsSession.finishContext(responseId).pipe(
-                  Effect.mapError(
-                    (): ResponseFailure => ({
-                      stage: "elevenlabs",
-                      reason: "Speech synthesis context failed to finish",
-                    }),
-                  ),
+                  Effect.catch(synthesisFailure("Speech synthesis context failed to finish")),
                 );
               }),
             ),
@@ -368,6 +432,18 @@ export const coordinateCall = <E>(
             reason: "Language model generation ended without completion",
           });
         }
+      });
+
+      const launchGeneration = Effect.fnUntraced(function*(started: StartedGeneration) {
+        const gate = yield* Deferred.make<void>();
+        const fiber = yield* Deferred.await(gate).pipe(Effect.andThen(runGeneration(started)), Effect.forkIn(generationScope));
+        const installed = yield* stateLock.withPermit(Effect.gen(function*() {
+          if ((yield* Ref.get(state)).activeResponseId !== started.responseId) return false;
+          yield* Ref.set(currentGeneration, { responseId: started.responseId, fiber });
+          return true;
+        }));
+        if (installed) yield* Deferred.succeed(gate, undefined);
+        else yield* Fiber.interrupt(fiber);
       });
 
       const beginResponse = Effect.fnUntraced(function*(event: FluxEvent & { _tag: "Turn" }) {
@@ -393,6 +469,7 @@ export const coordinateCall = <E>(
         }
         if (started.success === null) return;
         const accepted = started.success;
+        yield* Ref.set(consecutiveTtsLosses, 0);
 
         yield* enqueue({
           _tag: "transcript",
@@ -400,30 +477,7 @@ export const coordinateCall = <E>(
           text: transcript,
           final: true,
         });
-
-        const gate = yield* Deferred.make<void>();
-        const fiber = yield* Deferred.await(gate).pipe(
-          Effect.andThen(
-            runGeneration({
-              responseId: accepted.responseId,
-              turns: accepted.turns,
-            }),
-          ),
-          Effect.forkScoped,
-        );
-        const installed = yield* stateLock.withPermit(
-          Effect.gen(function* () {
-            const current = yield* Ref.get(state);
-            if (current.activeResponseId !== accepted.responseId) return false;
-            yield* Ref.set(currentGeneration, {
-              responseId: accepted.responseId,
-              fiber,
-            });
-            return true;
-          }),
-        );
-        if (installed) yield* Deferred.succeed(gate, undefined);
-        else yield* Fiber.interrupt(fiber);
+        yield* launchGeneration(accepted);
       });
 
       const handleTurn = Effect.fnUntraced(function*(event: FluxEvent & { _tag: "Turn" }) {
@@ -492,7 +546,7 @@ export const coordinateCall = <E>(
         }
 
         const text = (yield* Ref.get(completedText)).get(event.responseId);
-        if (text === undefined) {
+        if (text === undefined || !(yield* Ref.get(textDelivered)).has(event.responseId)) {
           yield* invalidateAndPublish(
             event.responseId,
             true,
@@ -540,12 +594,16 @@ export const coordinateCall = <E>(
           ...(active.responseId === null ? [] : [active.responseId]),
           ...active.playbackResponseIds,
         ];
+        const owned = yield* Ref.getAndSet(ttsOwner, { _tag: "Closed" });
+        if (owned._tag === "Ready") {
+          yield* owned.session.retireSocket;
+          yield* Deferred.succeed(owned.retired, undefined);
+        } else if (owned._tag === "Reconnecting") yield* Deferred.succeed(owned.ready, undefined);
+        // Retirement releases an uninterruptible finish/flush before we join its fiber.
         if (active.fiber !== null) yield* Fiber.interrupt(active.fiber.fiber);
-        if (active.responseId !== null) {
-          yield* ttsSession.closeContext(active.responseId).pipe(Effect.ignore);
-        }
+        if (owned._tag === "Ready") yield* Scope.close(owned.scope, Exit.void);
         yield* deepgramSession.closeStream.pipe(Effect.ignore);
-        yield* ttsSession.closeSocket.pipe(Effect.ignore);
+        yield* Queue.end(reconstructions);
         yield* publicationLock.withPermit(
           Effect.gen(function* () {
             const controls: Array<CallOutput> = [];
@@ -637,13 +695,53 @@ export const coordinateCall = <E>(
         ),
         Effect.forkScoped,
       );
-      yield* Effect.forever(ttsSession.receive.pipe(
-        Effect.flatMap((event) =>
-          Ref.get(shuttingDown).pipe(
-            Effect.flatMap((closing) => closing ? Effect.interrupt : handleTtsEvent(event)),
-          ),
-        ),
-      )).pipe(
+      yield* Stream.fromQueue(reconstructions).pipe(
+        Stream.runForEach((job) => Effect.gen(function*() {
+          yield* Scope.close(job.old.scope, Exit.void);
+          if (job.fiber !== null) yield* Fiber.interrupt(job.fiber);
+          if (yield* Ref.get(shuttingDown)) return;
+          if ((yield* Ref.updateAndGet(consecutiveTtsLosses, (count) => count + 1)) > 3) {
+            yield* shutdown(failureOutput("elevenlabs", "Speech synthesis repeatedly lost its session during recovery", false));
+            return;
+          }
+          if (job.previousResponseId !== null) {
+            // Actual ordered output publication, not the separate control-publication queue.
+            yield* enqueue({ _tag: "clearPlayback", responseId: job.previousResponseId });
+          }
+          const replacement = yield* openTts();
+          const installed = yield* Ref.modify(ttsOwner, (owned) => owned === job.waiting
+            ? [true, replacement] as const : [false, owned] as const);
+          if (!installed) {
+            yield* replacement.session.retireSocket;
+            yield* Scope.close(replacement.scope, Exit.void);
+            return;
+          }
+          yield* Deferred.succeed(job.waiting.ready, undefined);
+          if (job.generation !== null) yield* launchGeneration(job.generation);
+          yield* Effect.logInfo("Speech synthesis session reconstructed");
+        })),
+        Effect.catch(() => shutdown(failureOutput("elevenlabs", "Reconstructing speech synthesis failed", false))),
+        Effect.forkScoped,
+      );
+      yield* Effect.forever(Effect.gen(function*() {
+        const physical = yield* awaitTts;
+        const received = yield* Effect.raceFirst(
+          physical.session.receive.pipe(Effect.result),
+          Deferred.await(physical.retired).pipe(Effect.as(null)),
+        );
+        if (received === null || (yield* Ref.get(ttsOwner)) !== physical) return;
+        if (Result.isFailure(received)) {
+          if (received.failure._tag === "ElevenLabsTransportError" && received.failure.sessionLost) {
+            yield* reportTtsLoss(physical);
+            return;
+          }
+          return yield* received.failure;
+        }
+        if (!(yield* Ref.get(shuttingDown))) {
+          if (received.success._tag === "Audio" && received.success.payload.length > 0) yield* Ref.set(consecutiveTtsLosses, 0);
+          yield* handleTtsEvent(received.success);
+        }
+      })).pipe(
         Effect.catch(() =>
           Ref.get(shuttingDown).pipe(
             Effect.flatMap((closing) =>
@@ -726,6 +824,15 @@ export const coordinateCall = <E>(
           );
         }),
         Stream.flatMap(Stream.fromIterable),
+        Stream.ensuring(Effect.gen(function*() {
+          // Run before enclosing scope teardown joins generation/provider fibers.
+          yield* Ref.set(shuttingDown, true);
+          const owned = yield* Ref.getAndSet(ttsOwner, { _tag: "Closed" });
+          if (owned._tag === "Ready") {
+            yield* owned.session.retireSocket;
+            yield* Deferred.succeed(owned.retired, undefined);
+          } else if (owned._tag === "Reconnecting") yield* Deferred.succeed(owned.ready, undefined);
+        })),
       );
     }).pipe(
       Effect.catch((startup) =>

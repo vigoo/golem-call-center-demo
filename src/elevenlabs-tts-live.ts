@@ -23,6 +23,7 @@ export const ElevenLabsTransportLive = Layer.succeed(
         // That tag is deliberately not public, so erase it at this application integration seam.
         const connect = Websocket.connect(url, {
           headers,
+          reconstructionPolicy: "report-connection-loss",
         }) as Effect.Effect<Websocket.GolemSocket, Socket.SocketError, Scope.Scope>;
         const socket = yield* connect.pipe(
           Effect.mapError((error) => socketFailure("connect", error)),

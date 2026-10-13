@@ -74,6 +74,27 @@ const provideFake = <A, E>(
 ) => effect.pipe(Effect.provide(ElevenLabsTts.layer), Effect.provide(fake.layer));
 
 describe("ElevenLabs multi-context TTS", () => {
+  it.live("physical retirement cancels a blocked flush without sending a later close on the old socket", () =>
+    Effect.gen(function* () {
+      const flushing = yield* Deferred.make<void>();
+      const fake = yield* makeFakeTransport((message) => message.flush === true
+        ? Deferred.succeed(flushing, undefined).pipe(Effect.andThen(Effect.never)) : Effect.void);
+      yield* Effect.scoped(provideFake(Effect.gen(function*() {
+        const session = yield* (yield* ElevenLabsTts).open("key", options);
+        const id = responseId("response-retired");
+        yield* session.startContext(id);
+        const finishing = yield* Effect.forkChild(session.finishContext(id));
+        yield* Deferred.await(flushing);
+        yield* session.retireSocket;
+        yield* Fiber.await(finishing);
+        yield* session.closeSocket;
+      }), fake));
+      expect(fake.sent).not.toContainEqual({ context_id: "response-retired", close_context: true });
+      expect(fake.sent).not.toContainEqual({ close_socket: true });
+      expect(fake.closes).toEqual(["closed"]);
+    }).pipe(Effect.timeout("3 seconds")),
+  );
+
   it("builds a URL with explicit model, PCM format, and timeout", () => {
     const url = new URL(buildElevenLabsUrl(options));
     expect(url.pathname).toBe(
@@ -97,6 +118,7 @@ describe("ElevenLabs multi-context TTS", () => {
             yield* session.sendText(id, "Hello ");
             yield* session.sendText(id, "world. ");
             yield* session.finishContext(id);
+            yield* session.closeSocket;
           }),
           fake,
         ),

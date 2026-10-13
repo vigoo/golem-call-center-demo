@@ -29,6 +29,7 @@ import {
   type ElevenLabsEvent,
   type ElevenLabsSession,
   ElevenLabsTts,
+  ElevenLabsTransport,
   ElevenLabsTransportError,
 } from "../src/elevenlabs-tts.js";
 import {
@@ -40,6 +41,7 @@ interface Harness {
   readonly layer: Layer.Layer<DeepgramFlux | ElevenLabsTts | ResponseGenerator>;
   readonly fluxEvents: Queue.Queue<FluxEvent, DeepgramTransportError>;
   readonly ttsEvents: Queue.Queue<ElevenLabsEvent, ElevenLabsTransportError>;
+  readonly ttsConnections: Array<Queue.Queue<ElevenLabsEvent, ElevenLabsTransportError>>;
   readonly sentAudio: Array<Uint8Array>;
   readonly startedContexts: Array<ResponseId>;
   readonly text: Array<{ responseId: ResponseId; text: string }>;
@@ -54,10 +56,13 @@ const makeHarness = (
   onTtsReceive: Effect.Effect<void> = Effect.void,
   onFluxReceived: (event: FluxEvent) => Effect.Effect<void> = () => Effect.void,
   onSendAudio: Effect.Effect<void> = Effect.void,
+  onSendText: (id: ResponseId, text: string) => Effect.Effect<void, ElevenLabsTransportError> = () => Effect.void,
+  onTtsOpen: Effect.Effect<void> = Effect.void,
 ) =>
   Effect.gen(function* () {
     const fluxEvents = yield* Queue.unbounded<FluxEvent, DeepgramTransportError>();
     const ttsEvents = yield* Queue.unbounded<ElevenLabsEvent, ElevenLabsTransportError>();
+    const ttsConnections: Harness["ttsConnections"] = [];
     const sentAudio: Array<Uint8Array> = [];
     const startedContexts: Array<ResponseId> = [];
     const text: Array<{ responseId: ResponseId; text: string }> = [];
@@ -91,12 +96,15 @@ const makeHarness = (
       startContext: (responseId) =>
         Effect.sync(() => startedContexts.push(responseId)),
       sendText: (responseId, value) =>
-        Effect.sync(() => text.push({ responseId, text: value })),
+        Effect.sync(() => text.push({ responseId, text: value })).pipe(Effect.andThen(onSendText(responseId, value))),
       finishContext: (responseId) =>
         Effect.sync(() => finishedContexts.push(responseId)),
       closeContext: (responseId) =>
         Effect.sync(() => closedContexts.push(responseId)),
       receive: onTtsReceive.pipe(Effect.andThen(Queue.take(ttsEvents))),
+      retireSocket: Ref.update(ttsClosed, (count) => count + 1).pipe(Effect.andThen(Effect.sync(() => {
+        for (const id of startedContexts) if (!closedContexts.includes(id)) closedContexts.push(id);
+      }))),
       closeSocket: Ref.update(ttsClosed, (count) => count + 1).pipe(
         Effect.andThen(
           Queue.fail(
@@ -119,7 +127,12 @@ const makeHarness = (
       ),
       Layer.succeed(
         ElevenLabsTts,
-        ElevenLabsTts.of({ open: () => Effect.succeed(ttsSession) }),
+        ElevenLabsTts.of({ open: () => Effect.gen(function*() {
+          const events = ttsConnections.length === 0 ? ttsEvents : yield* Queue.unbounded<ElevenLabsEvent, ElevenLabsTransportError>();
+          ttsConnections.push(events);
+          if (ttsConnections.length > 1) yield* onTtsOpen;
+          return { ...ttsSession, receive: onTtsReceive.pipe(Effect.andThen(Queue.take(events))) };
+        }) }),
       ),
       Layer.succeed(
         ResponseGenerator,
@@ -133,6 +146,7 @@ const makeHarness = (
       layer,
       fluxEvents,
       ttsEvents,
+      ttsConnections,
       sentAudio,
       startedContexts,
       text,
@@ -205,6 +219,318 @@ const runCall = (
   );
 
 describe("call coordinator", () => {
+  it.live.each([false, true])("cancelling collection retires a blocked flush (downstream callback: %s)", (downstream) =>
+    Effect.gen(function* () {
+      const flushing = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const callback = yield* Deferred.make<void>();
+      const harness = yield* makeHarness([Stream.make(
+        { _tag: "TextDelta", text: "Complete." }, { _tag: "Completed" },
+      )]);
+      const input = yield* Queue.unbounded<CallInput, Cause.Done>();
+      const transport = Layer.succeed(ElevenLabsTransport, ElevenLabsTransport.of({
+        connect: () => Effect.succeed({
+          receiveText: Effect.never,
+          sendText: (text: string) => JSON.parse(text).flush
+            ? Deferred.succeed(flushing, undefined).pipe(Effect.andThen(Deferred.await(release)))
+            : Effect.void,
+        }),
+      }));
+      const fiber = yield* coordinateCall(Stream.fromQueue(input), options([])).pipe(
+        Stream.provide(Layer.merge(harness.layer, ElevenLabsTts.layer.pipe(Layer.provide(transport)))),
+        (stream) => downstream
+          ? stream.pipe(Stream.runForEach(() => Deferred.succeed(callback, undefined).pipe(Effect.andThen(Effect.never))))
+          : stream.pipe(Stream.runDrain),
+        Effect.forkChild,
+      );
+      yield* Queue.offer(harness.fluxEvents, turn("EndOfTurn", "Question", 1));
+      if (downstream) yield* Deferred.await(callback);
+      yield* Deferred.await(flushing);
+      const cancelling = yield* Fiber.interrupt(fiber).pipe(Effect.forkChild);
+      const result = yield* Fiber.join(cancelling).pipe(Effect.timeout("2 seconds"), Effect.result);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(cancelling);
+      expect(result._tag).toBe("Success");
+    }),
+  );
+
+  it.live("hangup after interrupt retires a real adapter's blocked context close", () =>
+    Effect.gen(function* () {
+      const closing = yield* Deferred.make<void>();
+      const sockets: Array<Queue.Queue<string, ElevenLabsTransportError>> = [];
+      let textSent = false;
+      const transport = Layer.succeed(ElevenLabsTransport, ElevenLabsTransport.of({ connect: () => Effect.gen(function*() {
+        const inbound = yield* Queue.unbounded<string, ElevenLabsTransportError>();
+        sockets.push(inbound);
+        return {
+          receiveText: Queue.take(inbound),
+          sendText: (text: string) => Effect.suspend(() => {
+            const message = JSON.parse(text) as { text?: string; context_id?: string; close_context?: boolean };
+            if (message.text === "Pending answer.") textSent = true;
+            return message.close_context && message.context_id === "response-1"
+              ? Deferred.succeed(closing, undefined).pipe(Effect.andThen(Effect.never)) : Effect.void;
+          }),
+        };
+      }) }));
+      const harness = yield* makeHarness([Stream.concat(Stream.make({ _tag: "TextDelta", text: "Pending answer." }), Stream.never)]);
+      const input = yield* Queue.unbounded<CallInput, Cause.Done>();
+      const states: Array<SavedCallState> = [];
+      const realTts = ElevenLabsTts.layer.pipe(Layer.provide(transport));
+      const fiber = yield* coordinateCall(Stream.fromQueue(input), options(states)).pipe(
+        Stream.provide(Layer.merge(harness.layer, realTts)), Stream.runCollect, Effect.forkChild,
+      );
+      yield* Queue.offer(harness.fluxEvents, turn("EndOfTurn", "Question", 1));
+      yield* waitUntil(() => textSent);
+      yield* Queue.offer(input, { _tag: "interrupt" });
+      yield* Deferred.await(closing);
+      yield* Queue.offer(input, { _tag: "hangup" });
+      expect(Array.from(yield* Fiber.join(fiber))).toContainEqual({ _tag: "interruptConfirmed" });
+      expect(states.at(-1)?.phase).toBe("ended");
+    }).pipe(Effect.timeout("3 seconds")),
+  );
+
+  it.live("hangup disposes an acquired replacement before its ownership is published", () =>
+    Effect.gen(function*() {
+      const acquired = yield* Deferred.make<void>();
+      const sockets: Array<Queue.Queue<string, ElevenLabsTransportError>> = [];
+      const wire: Array<string> = [];
+      const transport = Layer.succeed(ElevenLabsTransport, ElevenLabsTransport.of({
+        connect: () => Effect.gen(function*() {
+          const incoming = yield* Queue.unbounded<string, ElevenLabsTransportError>();
+          sockets.push(incoming);
+          return { receiveText: Queue.take(incoming), sendText: (text: string) => {
+            wire.push(text);
+            return JSON.parse(text).close_socket ? Effect.never : Effect.void;
+          } };
+        }),
+      }));
+      const gatedTts = Layer.effect(ElevenLabsTts, Effect.gen(function*() {
+        const real = yield* ElevenLabsTts;
+        return ElevenLabsTts.of({ open: Effect.fnUntraced(function*(key, settings) {
+          const session = yield* real.open(key, settings);
+          if (sockets.length === 2) {
+            yield* Deferred.succeed(acquired, undefined);
+            yield* Effect.never;
+          }
+          return session;
+        }) });
+      })).pipe(Layer.provide(ElevenLabsTts.layer.pipe(Layer.provide(transport))));
+      const harness = yield* makeHarness([]);
+      const input = yield* Queue.unbounded<CallInput, Cause.Done>();
+      const states: Array<SavedCallState> = [];
+      const fiber = yield* coordinateCall(Stream.fromQueue(input), options(states)).pipe(
+        Stream.provide(Layer.merge(harness.layer, gatedTts)), Stream.runCollect, Effect.forkChild,
+      );
+      yield* waitUntil(() => sockets.length === 1);
+      yield* Queue.fail(sockets[0]!, new ElevenLabsTransportError({ operation: "receive", reason: "lost", sessionLost: true }));
+      yield* Deferred.await(acquired);
+      yield* Queue.offer(input, { _tag: "hangup" });
+      yield* Fiber.join(fiber).pipe(Effect.timeout("2 seconds"));
+      expect(states.at(-1)?.phase).toBe("ended");
+      expect(wire).toEqual([]);
+    }),
+  );
+
+  it.effect("keeps a complete answer through loss while sending it on the first replacement", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness([
+        Stream.make({ _tag: "TextDelta", text: "Original complete answer." }, { _tag: "Completed" }),
+        Stream.make({ _tag: "TextDelta", text: "Wrong regeneration." }, { _tag: "Completed" }),
+      ], Effect.void, () => Effect.void, Effect.void, (id) => id === "response-2"
+        ? Effect.fail(new ElevenLabsTransportError({ operation: "send", reason: "lost again", sessionLost: true })) : Effect.void);
+      const input = yield* Queue.unbounded<CallInput, Cause.Done>();
+      const states: Array<SavedCallState> = [];
+      const fiber = yield* Effect.forkChild(runCall(input, harness, states));
+      yield* Queue.offer(harness.fluxEvents, turn("EndOfTurn", "Question", 1));
+      yield* waitUntil(() => harness.finishedContexts.length === 1);
+      yield* Queue.fail(harness.ttsEvents, new ElevenLabsTransportError({ operation: "receive", reason: "lost", sessionLost: true }));
+      yield* waitUntil(() => harness.finishedContexts.includes("response-3" as ResponseId));
+      yield* Queue.offer(harness.ttsConnections[2]!, { _tag: "Audio", responseId: "response-3" as ResponseId, payload: new Uint8Array([3, 4]) });
+      yield* Queue.offer(harness.ttsConnections[2]!, { _tag: "Final", responseId: "response-3" as ResponseId });
+      yield* waitUntil(() => states.at(-1)?.responses[2]?.status === "finished");
+      yield* Queue.offer(input, { _tag: "hangup" });
+      const output = yield* Fiber.join(fiber);
+      expect(output).toContainEqual({ _tag: "assistantText", responseId: "response-3", text: "Original complete answer." });
+      expect(states.at(-1)?.turns.map((entry) => entry.text)).toEqual(["Question", "Original complete answer."]);
+      expect(harness.ttsConnections).toHaveLength(3);
+    }),
+  );
+
+  it.effect("does not strand reconstruction when interrupt cancels a send-loss reporter waiting for the state lock", () =>
+    Effect.gen(function* () {
+      const sending = yield* Deferred.make<void>();
+      const loseSend = yield* Deferred.make<void>();
+      const invalidating = yield* Deferred.make<void>();
+      const releaseInvalidation = yield* Deferred.make<void>();
+      const harness = yield* makeHarness([
+        Stream.make({ _tag: "TextDelta", text: "Obsolete." }, { _tag: "Completed" }),
+        Stream.make({ _tag: "TextDelta", text: "Next answer." }, { _tag: "Completed" }),
+      ], Effect.void, () => Effect.void, Effect.void, (id) => id === "response-1"
+        ? Deferred.succeed(sending, undefined).pipe(Effect.andThen(Deferred.await(loseSend)),
+            Effect.andThen(Effect.fail(new ElevenLabsTransportError({ operation: "send", reason: "lost", sessionLost: true })))) : Effect.void);
+      const input = yield* Queue.unbounded<CallInput, Cause.Done>();
+      const states: Array<SavedCallState> = [];
+      let gated = false;
+      const configured = { ...options(states), onStateChange: (state: SavedCallState) => Effect.gen(function*() {
+        states.push(state);
+        if (!gated && state.responses[0]?.status === "interrupted") {
+          gated = true;
+          yield* Deferred.succeed(invalidating, undefined);
+          yield* Deferred.await(releaseInvalidation);
+        }
+      }) };
+      const fiber = yield* coordinateCall(Stream.fromQueue(input), configured).pipe(Stream.provide(harness.layer), Stream.runCollect, Effect.forkChild);
+      yield* Queue.offer(harness.fluxEvents, turn("EndOfTurn", "First question", 1));
+      yield* Deferred.await(sending);
+      yield* Queue.offer(input, { _tag: "interrupt" });
+      yield* Deferred.await(invalidating);
+      yield* Deferred.succeed(loseSend, undefined);
+      for (let i = 0; i < 10; i++) yield* Effect.yieldNow;
+      yield* Deferred.succeed(releaseInvalidation, undefined);
+      yield* waitUntil(() => harness.ttsConnections.length === 2);
+      yield* Queue.offer(harness.fluxEvents, turn("EndOfTurn", "Next question", 2));
+      yield* waitUntil(() => harness.finishedContexts.includes("response-2" as ResponseId));
+      yield* Queue.offer(harness.ttsConnections[1]!, { _tag: "Audio", responseId: "response-2" as ResponseId, payload: new Uint8Array([3, 4]) });
+      yield* Queue.offer(harness.ttsConnections[1]!, { _tag: "Final", responseId: "response-2" as ResponseId });
+      yield* waitUntil(() => states.at(-1)?.responses[1]?.status === "finished");
+      yield* Queue.offer(input, { _tag: "hangup" });
+      expect(Array.from(yield* Fiber.join(fiber))).toContainEqual({ _tag: "assistantText", responseId: "response-2", text: "Next answer." });
+    }),
+  );
+
+  it.effect("reuses completed answer text under a new response ID after synthesis session loss", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness([
+        Stream.make({ _tag: "TextDelta", text: "The complete answer." }, { _tag: "Completed" }),
+        Stream.make({ _tag: "TextDelta", text: "Wrong regenerated answer." }, { _tag: "Completed" }),
+      ]);
+      const input = yield* Queue.unbounded<CallInput, Cause.Done>();
+      const states: Array<SavedCallState> = [];
+      const fiber = yield* Effect.forkChild(runCall(input, harness, states, 1));
+      yield* Queue.offer(harness.fluxEvents, turn("EndOfTurn", "A question", 1));
+      yield* waitUntil(() => harness.finishedContexts.length === 1);
+      yield* Queue.offer(harness.ttsEvents, { _tag: "Audio", responseId: "response-1" as ResponseId, payload: new Uint8Array([1, 2]) });
+      yield* waitUntil(() => states.at(-1)?.responses[0]?.emittedThrough === 0);
+      yield* Queue.offer(input, { _tag: "playbackAck", responseId: "response-1" as ResponseId, playedThrough: 0 });
+      yield* waitUntil(() => states.at(-1)?.responses[0]?.playedThrough === 0);
+      yield* Queue.fail(harness.ttsEvents, new ElevenLabsTransportError({ operation: "receive", reason: "lost", sessionLost: true }));
+      yield* waitUntil(() => harness.finishedContexts.length === 2);
+      expect(harness.ttsConnections).toHaveLength(2);
+      yield* Queue.offer(harness.ttsConnections[1]!, { _tag: "Audio", responseId: "response-1" as ResponseId, payload: new Uint8Array([9, 9]) });
+      yield* Queue.offer(harness.ttsConnections[1]!, { _tag: "Audio", responseId: "response-2" as ResponseId, payload: new Uint8Array([3, 4]) });
+      yield* Queue.offer(harness.ttsConnections[1]!, { _tag: "Final", responseId: "response-2" as ResponseId });
+      yield* waitUntil(() => states.at(-1)?.responses[1]?.status === "finished");
+      yield* Queue.offer(input, { _tag: "hangup" });
+      const output = yield* Fiber.join(fiber);
+      expect(output.filter((event) => event._tag === "assistantText")).toEqual([
+        { _tag: "assistantText", responseId: "response-2", text: "The complete answer." },
+      ]);
+      expect(output.filter((event) => event._tag === "transcript" && event.final)).toHaveLength(1);
+      const clearIndex = output.findIndex((event) => event._tag === "clearPlayback" && event.responseId === "response-1");
+      const newAudioIndex = output.findIndex((event) => event._tag === "audio" && event.responseId === "response-2");
+      expect(clearIndex).toBeGreaterThanOrEqual(0);
+      expect(newAudioIndex).toBeGreaterThan(clearIndex);
+      expect(output.filter((event) => event._tag === "audio")).toHaveLength(2);
+      expect(states.at(-1)?.responses[0]).toMatchObject({ status: "interrupted", emittedThrough: 0, playedThrough: 0 });
+      expect(states.at(-1)?.turns.map((entry) => entry.text)).toEqual(["A question", "The complete answer."]);
+    }),
+  );
+
+  it.effect("regenerates incomplete text once after concurrent send/receive loss without splicing a suffix", () =>
+    Effect.gen(function* () {
+      let loseFirst = true;
+      let inbound: Harness["ttsEvents"];
+      const harness = yield* makeHarness([
+        Stream.make({ _tag: "TextDelta", text: "Obsolete prefix" }, { _tag: "Completed" }),
+        Stream.make({ _tag: "TextDelta", text: "Fresh full answer." }, { _tag: "Completed" }),
+      ], Effect.void, () => Effect.void, Effect.void, () => {
+        if (!loseFirst) return Effect.void;
+        loseFirst = false;
+        return Queue.fail(inbound, new ElevenLabsTransportError({ operation: "receive", reason: "lost", sessionLost: true })).pipe(
+          Effect.andThen(Effect.yieldNow),
+          Effect.andThen(Effect.fail(new ElevenLabsTransportError({ operation: "send", reason: "lost", sessionLost: true }))),
+        );
+      });
+      inbound = harness.ttsEvents;
+      const input = yield* Queue.unbounded<CallInput, Cause.Done>();
+      const states: Array<SavedCallState> = [];
+      const fiber = yield* Effect.forkChild(runCall(input, harness, states));
+      yield* Queue.offer(harness.fluxEvents, turn("EndOfTurn", "Question", 1));
+      yield* waitUntil(() => harness.finishedContexts.includes("response-2" as ResponseId));
+      yield* Queue.offer(harness.ttsConnections[1]!, { _tag: "Audio", responseId: "response-2" as ResponseId, payload: new Uint8Array([3, 4]) });
+      yield* Queue.offer(harness.ttsConnections[1]!, { _tag: "Final", responseId: "response-2" as ResponseId });
+      yield* waitUntil(() => states.at(-1)?.responses[1]?.status === "finished");
+      yield* Queue.offer(input, { _tag: "hangup" });
+      const output = yield* Fiber.join(fiber);
+      expect(output).toContainEqual({ _tag: "assistantText", responseId: "response-2", text: "Fresh full answer." });
+      expect(output.some((event) => event._tag === "failure")).toBe(false);
+      expect(states.at(-1)?.nextTurnNumber).toBe(3);
+      expect(harness.ttsConnections).toHaveLength(2);
+    }),
+  );
+
+  it.effect("keeps finished durable audio intact when an idle synthesis socket is lost", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness([Stream.make({ _tag: "TextDelta", text: "Finished." }, { _tag: "Completed" })]);
+      const input = yield* Queue.unbounded<CallInput, Cause.Done>();
+      const states: Array<SavedCallState> = [];
+      const fiber = yield* Effect.forkChild(runCall(input, harness, states));
+      yield* Queue.offer(harness.fluxEvents, turn("EndOfTurn", "Question", 1));
+      yield* waitUntil(() => harness.finishedContexts.length === 1);
+      yield* Queue.offer(harness.ttsEvents, { _tag: "Audio", responseId: "response-1" as ResponseId, payload: new Uint8Array([1, 2]) });
+      yield* Queue.offer(harness.ttsEvents, { _tag: "Final", responseId: "response-1" as ResponseId });
+      yield* waitUntil(() => states.at(-1)?.responses[0]?.status === "finished");
+      yield* Queue.fail(harness.ttsEvents, new ElevenLabsTransportError({ operation: "receive", reason: "lost", sessionLost: true }));
+      yield* waitUntil(() => harness.ttsConnections.length === 2);
+      yield* Queue.offer(input, { _tag: "hangup" });
+      const output = yield* Fiber.join(fiber);
+      expect(output.filter((event) => event._tag === "responseFinished")).toEqual([{ _tag: "responseFinished", responseId: "response-1" }]);
+      expect(states.at(-1)?.responses).toHaveLength(1);
+      expect(states.at(-1)?.responses[0]?.status).toBe("finished");
+      expect(states.at(-1)?.nextResponseNumber).toBe(2);
+    }),
+  );
+
+  it.effect("terminates repeated synthesis reconstruction losses without an unbounded retry loop", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness(Array.from({ length: 5 }, () =>
+        Stream.make({ _tag: "TextDelta" as const, text: "Answer." }, { _tag: "Completed" as const })),
+        Effect.void, () => Effect.void, Effect.void,
+        () => Effect.fail(new ElevenLabsTransportError({ operation: "send", reason: "lost", sessionLost: true })));
+      const input = yield* Queue.unbounded<CallInput, Cause.Done>();
+      const states: Array<SavedCallState> = [];
+      const fiber = yield* Effect.forkChild(runCall(input, harness, states));
+      yield* Queue.offer(harness.fluxEvents, turn("EndOfTurn", "Question", 1));
+      const output = yield* Fiber.join(fiber);
+      expect(output).toContainEqual(expect.objectContaining({ _tag: "failure", stage: "elevenlabs", recoverable: false }));
+      expect(harness.ttsConnections).toHaveLength(4);
+      expect(states.at(-1)?.phase).toBe("ended");
+      expect(states.at(-1)?.turns.map((entry) => entry.text)).toEqual(["Question"]);
+    }),
+  );
+
+  it.effect("interrupt and hangup revoke a replacement while synthesis acquisition is blocked", () =>
+    Effect.gen(function* () {
+      const gate = yield* Deferred.make<void>();
+      const harness = yield* makeHarness([
+        Stream.make({ _tag: "TextDelta", text: "Complete." }, { _tag: "Completed" }),
+      ], Effect.void, () => Effect.void, Effect.void, () => Effect.void, Deferred.await(gate));
+      const input = yield* Queue.unbounded<CallInput, Cause.Done>();
+      const states: Array<SavedCallState> = [];
+      const fiber = yield* Effect.forkChild(runCall(input, harness, states));
+      yield* Queue.offer(harness.fluxEvents, turn("EndOfTurn", "Question", 1));
+      yield* waitUntil(() => harness.finishedContexts.length === 1);
+      yield* Queue.fail(harness.ttsEvents, new ElevenLabsTransportError({ operation: "receive", reason: "lost", sessionLost: true }));
+      yield* waitUntil(() => harness.ttsConnections.length === 2);
+      yield* Queue.offer(input, { _tag: "interrupt" });
+      yield* Queue.offer(input, { _tag: "hangup" });
+      const output = yield* Fiber.join(fiber);
+      expect(output).toContainEqual({ _tag: "interruptConfirmed" });
+      expect(harness.startedContexts).toEqual(["response-1"]);
+      expect(states.at(-1)?.phase).toBe("ended");
+    }),
+  );
+
   it.effect("processes interrupt and hangup while recognition audio sending is blocked", () =>
     Effect.gen(function* () {
       const sending = yield* Deferred.make<void>();
@@ -997,6 +1323,49 @@ describe("call coordinator", () => {
         { _tag: "clearPlayback", responseId: "response-1" },
         { _tag: "interruptConfirmed" },
       ]);
+    }),
+  );
+
+  it.live.each([false, true])("hangup retires a blocked synthesis flush (preceding interrupt: %s)", (interruptFirst) =>
+    Effect.gen(function* () {
+      const flushing = yield* Deferred.make<void>();
+      const completed = yield* Deferred.make<void>();
+      const input = yield* Queue.unbounded<CallInput, Cause.Done>();
+      const flux = yield* Queue.unbounded<FluxEvent>();
+      const wire = yield* Queue.unbounded<string>();
+      const transport = Layer.succeed(ElevenLabsTransport, ElevenLabsTransport.of({
+        connect: () => Effect.succeed({
+          receiveText: Queue.take(wire),
+          sendText: (text: string) => JSON.parse(text).flush === true
+            ? Deferred.succeed(flushing, undefined).pipe(Effect.andThen(Effect.never))
+            : Effect.void,
+        }),
+      }));
+      const providers = Layer.mergeAll(
+        ElevenLabsTts.layer.pipe(Layer.provide(transport)),
+        Layer.succeed(DeepgramFlux, DeepgramFlux.of({ open: () => Effect.succeed({
+          receive: Queue.take(flux), commitTurn: (_event, accept) => accept,
+          sendAudio: () => Effect.void, forceEndTurn: Effect.void,
+          configure: () => Effect.void, closeStream: Effect.void,
+        }) })),
+        Layer.succeed(ResponseGenerator, ResponseGenerator.of({ stream: () => Stream.make(
+          { _tag: "TextDelta" as const, text: "Complete answer." }, { _tag: "Completed" as const },
+        ) })),
+      );
+      const fiber = yield* coordinateCall(Stream.fromQueue(input), {
+        initialState: initialCallState(), deepgramApiKey: Redacted.make("dummy"),
+        elevenLabsApiKey: Redacted.make("dummy"), systemPrompt: "test",
+        elevenLabs: { voiceId: "voice", modelId: "model", outputFormat: "pcm_16000" },
+      }).pipe(Stream.provide(providers), Stream.runCollect,
+        Effect.tap(() => Deferred.succeed(completed, undefined)), Effect.forkChild);
+      yield* Queue.offer(flux, { _tag: "Turn", kind: "EndOfTurn", requestId: "request",
+        sequence: 1, turnIndex: 1, transcript: "Question", endOfTurnConfidence: 0.9 });
+      yield* Deferred.await(flushing);
+      if (interruptFirst) yield* Queue.offer(input, { _tag: "interrupt" });
+      yield* Queue.offer(input, { _tag: "hangup" });
+      yield* Deferred.await(completed).pipe(Effect.timeout("2 seconds"));
+      const output = yield* Fiber.join(fiber);
+      expect(Array.from(output)).toContainEqual({ _tag: "clearPlayback", responseId: "response-1" });
     }),
   );
 
