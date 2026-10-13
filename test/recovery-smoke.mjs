@@ -12,10 +12,10 @@ const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const run = promisify(execFile);
 const failures = [];
 
-for (const scenario of ["slow-reader", "failure-stt", "failure-openai", "failure-elevenlabs", "interrupt-stt", "interrupt-openai", "interrupt-elevenlabs", "crash-stt", "crash-openai", "crash-elevenlabs"]) {
+for (const scenario of ["slow-reader", "failure-stt", "failure-openai", "failure-elevenlabs", "interrupt-stt", "interrupt-openai", "interrupt-elevenlabs", "replay-stt", "crash-stt", "crash-openai", "crash-elevenlabs"]) {
   if (process.env.GOLEM_TEST_SCENARIO && scenario !== process.env.GOLEM_TEST_SCENARIO) continue;
   const [kind, stage] = scenario.split("-");
-  await fetch(fixture, { method: "POST", body: JSON.stringify(kind === "failure" ? { failStage: stage } : kind === "crash" || kind === "interrupt" ? { holdStage: stage } : {}) });
+  await fetch(fixture, { method: "POST", body: JSON.stringify(kind === "failure" ? { failStage: stage } : kind === "crash" || kind === "interrupt" || kind === "replay" ? { holdStage: stage } : {}) });
   const callId = `${scenario}-${randomUUID()}`;
   const base = `${origin}/calls/${callId}/run/invocations/${randomUUID()}`;
   const request = async (path, options = {}) => {
@@ -36,20 +36,27 @@ for (const scenario of ["slow-reader", "failure-stt", "failure-openai", "failure
   try {
     await request("", { method: "PUT", body: "{}" });
     await append([{ audio: { sequence: 0, capturedAt: Date.now(), payload: "AAA=" } }]);
-    if (kind === "crash" || kind === "interrupt") {
+    if (kind === "crash" || kind === "interrupt" || kind === "replay") {
       const deadline = Date.now() + 15000;
       while ((await (await fetch(fixture)).json()).pending[stage] === 0) { assert.ok(Date.now() < deadline, `${stage} not held`); await pause(50); }
     }
-    if (kind === "crash") {
+    if (kind === "crash" || kind === "replay") {
       const { stdout, stderr } = await run("golem", ["agent", "simulate-crash", `CallAgent(${JSON.stringify(callId)})`, "-E", "integration", "-Y"], {
         env: { ...process.env, GOLEM_EFFECT_GOLEM_PATH: `${process.env.HOME}/projects/golem/golem/sdks/effect` }, timeout: 30000,
       });
       await writeFile(`.amp/in/${scenario}.log`, stdout + stderr);
-      await fetch(fixture, { method: "POST", body: '{"release":true}' });
+      if (kind === "crash") await fetch(fixture, { method: "POST", body: '{"release":true}' });
     }
     if (kind === "slow") await pause(1500);
     const deadline = Date.now() + 20000;
-    if (kind === "interrupt") {
+    if (kind === "replay") {
+      // Runtime liveness is independent of restoring an old provider session: fresh controls
+      // must be processed even if recognition has no new audio and no transcript to return.
+      await append(["interrupt"]);
+      while (!closed && !events.includes("interruptConfirmed")) { assert.ok(Date.now() < deadline, "Replay did not process a fresh interrupt"); await poll(); await pause(50); }
+      assert.ok(events.includes("interruptConfirmed"));
+      assert.ok(!closed, "Replay liveness check prematurely closed the call");
+    } else if (kind === "interrupt") {
       await append(["interrupt"]);
       while (!closed && !events.includes("interruptConfirmed")) { assert.ok(Date.now() < deadline, `${scenario} interrupt not confirmed`); await poll(); await pause(50); }
       assert.ok(events.includes("interruptConfirmed"));
@@ -85,7 +92,17 @@ for (const scenario of ["slow-reader", "failure-stt", "failure-openai", "failure
   } finally {
     await writeFile(`.amp/in/${scenario}-events.json`, JSON.stringify(events, null, 2));
     await fetch(fixture, { method: "POST", body: "{}" });
-    if (!closed) await request("/streams/input", { method: "POST", headers: { "Stream-Closed": "true" }, body: '["hangup"]' }).catch((error) => console.error(`Unconfirmed cleanup: ${error.message}`));
+    if (!closed) {
+      try {
+        await append(["hangup"], true);
+        const deadline = Date.now() + 10000;
+        while (!closed) { assert.ok(Date.now() < deadline, "Hangup persisted but output did not close"); await poll(); await pause(100); }
+      } catch (error) {
+        console.error(`Unconfirmed cleanup for ${callId}: ${error.message}`);
+        if (!failures.includes(scenario)) failures.push(scenario);
+      }
+    }
+    await writeFile(`.amp/in/${scenario}-events.json`, JSON.stringify(events, null, 2));
   }
 }
 assert.deepEqual(failures, [], "Recovery scenarios failed; inspect the retained logs");

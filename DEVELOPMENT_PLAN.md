@@ -771,3 +771,54 @@ wait until its clear event is in the same output queue, not merely an intermedia
 Recheck ownership after acquisitions so hangup/new speech wins. Tests must distinguish concurrent
 send/receive loss, OpenAI/TTS loss observation order, completion races, blocked reconstruction,
 output saturation, overflow followed by a healthy turn, and snapshot validity after replacement.
+
+### Recovery progress and replay gate — 2026-10-13
+
+The response-attempt foundation is committed: a restart can allocate a new response ID for the
+same committed user turn without incrementing the turn counter, while preserving the old
+attempt's emitted/acknowledged audio history. Deepgram/ElevenLabs adapters preserve the SDK's
+typed physical-session-loss classification. The reconstruction policy is **not enabled yet**;
+retained PCM replay, provider-session replacement and answer regeneration are still pending.
+All 77 unit tests and typecheck pass; Oracle reviewed the foundation and the bounded bug-finder
+reported no bugs.
+
+The installed CLI is compatible after rebuilding the local SDK with a private wasm-rquickjs
+generator at `15ab69c222fbd13cf9e80f3bb373bd0eeb524d10` (the global 0.4.6 generator emitted
+the obsolete two-argument WebSocket ABI). The private executable is under
+`.amp/in/recovery-tools/bin`; no global tool or SDK source was modified. Use that directory
+on PATH and retain `GOLEM_EFFECT_GOLEM_PATH` when rebuilding against this CLI.
+
+On fresh isolated data, the original reduced duplex echo **passes crash continuation**. A
+temporary variant with forked input ingestion and a bounded output queue also passed, then
+was removed. Normal fixture calls, provider-failure checks and all three non-crash interruption
+checks pass. The full pipeline still stalls after crash at STT, LLM and TTS gates, before
+physical WebSocket reconstruction. Server logs verify actual Restart and replay startup;
+CLI success alone is not considered recovery evidence.
+
+An additional `replay-stt` scenario separates runtime liveness from provider reconstruction:
+hold recognition output, simulate a crash, then append a fresh interrupt without expecting any
+old provider output. It fails to confirm the interrupt within 20 seconds; subsequently persisted
+hangup/input closure does not close output within another 10 seconds. The no-crash
+`interrupt-stt` control confirms interruption and closes output. The harness now verifies
+cleanup completion rather than treating an accepted hangup append as successful cleanup.
+Fallback cleanup checks output termination after fixture teardown, not graceful hangup or
+complete resource disposal; its success cannot erase a prior scenario failure.
+
+Run the diagnostic in Nushell with
+`with-env { GOLEM_TEST_SCENARIO: replay-stt } { node test/recovery-smoke.mjs }`.
+This is a **known failing integration test**, not a passing acceptance check.
+Logs/oplogs are retained under `.amp/in/`.
+The older `crash-*` scenarios remain provider-recovery acceptance goals, not proof that
+releasing held fixture callbacks can restore a lost provider socket.
+
+Oracle traced the earlier STT stall to the replay interval containing pending WebSocket
+receives, a completed zero-duration timer and a completed send. The precise cause remains
+unproven: runtime call admission/delivery and guest/SDK scheduling have not been distinguished.
+Duplicate checking found GOL-799 as the closest existing report; follow-up evidence was added
+there instead of opening another issue. GOL-709's in-progress call-claim ordering work may
+be relevant, but is not a verified fix. GOL-799 remains marked Done in Linear despite this
+broader failure. No ticket state was changed.
+
+Provider-session recovery remains paused at this replay gate. Do not deploy partially wired
+reconstruction or claim end-to-end crash recovery; resume steps 2–4 after the fresh-control
+replay test can make progress. The non-crash application remains unchanged by this diagnostic.
