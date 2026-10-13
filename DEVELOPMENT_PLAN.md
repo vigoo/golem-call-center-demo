@@ -838,3 +838,38 @@ The standalone failure is intermittent: five crash runs produced four failures a
 non-crash controls passed. Both outcomes are retained, not just failures. One successful
 replay is therefore insufficient acceptance evidence. Oracle reviewed the reproducer and
 evidence; its packaging/provenance corrections were applied. No runtime fix is claimed.
+
+### STT provider reconstruction — 2026-10-13
+
+The user authorized continuing despite intermittent GOL-862, separating application recovery
+tests from runtime replay liveness. The earlier pause is superseded; the defect remains open.
+Do not classify every timeout as GOL-862 or retry until green. Preserve bounded fresh-agent
+attempts and use logs proving replay stalled before application reconstruction for that diagnosis.
+
+Deepgram now opts into physical-session-loss reporting. One serialized sender replaces scoped
+recognition sockets; a retirement signal releases old receives independently of transport cleanup.
+Atomic ownership prevents hangup from being overwritten by late reconstruction. Acceptance of a
+final user turn and trimming its PCM share a recognition-epoch fence. A retired final is rejected
+and reconstructed, not committed twice. Relative provider times map to absolute sample boundaries.
+Up to ten seconds of uncommitted PCM are retained before send. Reconstruction restores the last
+configuration and replays it before live audio, capped at 1.25× including the queued live tail.
+Three consecutive session losses during one restoration terminate that restoration; ordinary
+provider/account/protocol failures are never silently retried. The SDK openTimeout is a no-op,
+so this step makes no promise of a timed provider-open deadline.
+
+If overflow removed the utterance beginning, reconstruction reports a visible repeat request and
+suppresses the damaged fragment through its first final before rearming. Recognition writes run
+in an independent bounded sender (128 frames / 320,000 queued bytes), allowing interrupt, playback
+ACK and hangup ingestion while reconstruction is pending. Exhausting that sender is terminal.
+Browser wire and snapshot shapes are unchanged; retained PCM is rebuilt by invocation replay,
+not copied into snapshots.
+
+85 unit tests, typecheck, local-SDK build and the isolated integration/mock deployment smoke pass.
+Tests cover receive/send loss, retained-tail boundaries, repeated loss during replay, overflow then
+a healthy turn, ordinary-error propagation, stale-final rejection, non-waking old receives,
+hangup during acquisition, and control responsiveness while sending is blocked. Oracle's races
+were fixed and its final STT review found no blockers; the bounded bug-finder review is clean.
+The smoke verifies transcript/audio/completion/ACK/hangup/output closure, not live-provider or
+crash-recovery compatibility. ElevenLabs/OpenAI replacement and the deployed crash matrix remain
+the next separate steps. Only the integration deployment was updated; existing agents were not
+reset or updated and the normal live deployment remains unchanged.

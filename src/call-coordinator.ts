@@ -96,6 +96,8 @@ export const coordinateCall = <E>(
       const stateLock = yield* Semaphore.make(1);
       const publicationLock = yield* Semaphore.make(1);
       const state = yield* Ref.make(options.initialState);
+      const audioInput = yield* Queue.bounded<Uint8Array, Cause.Done>(128);
+      const queuedAudioBytes = yield* Ref.make(0);
       const currentGeneration = yield* Ref.make<CurrentGeneration | null>(null);
       const completedText = yield* Ref.make<ReadonlyMap<ResponseId, string>>(new Map());
       const nextAudioSequence = yield* Ref.make<ReadonlyMap<ResponseId, number>>(new Map());
@@ -368,8 +370,10 @@ export const coordinateCall = <E>(
         }
       });
 
-      const beginResponse = Effect.fnUntraced(function*(transcript: string) {
-        const started = yield* updateState((current) => {
+      const beginResponse = Effect.fnUntraced(function*(event: FluxEvent & { _tag: "Turn" }) {
+        const transcript = event.transcript;
+        // Acceptance and trimming share the recognition epoch fence; retired finals are replayed.
+        const started = yield* deepgramSession.commitTurn(event, updateState((current) => {
           const result = startResponse(current, transcript);
           return Result.isFailure(result)
             ? Result.fail(result.failure)
@@ -381,15 +385,18 @@ export const coordinateCall = <E>(
                   turns: result.success.state.turns,
                 },
               ] as const);
-        });
+        }).pipe(Effect.flatMap((result) => Result.isFailure(result)
+          ? Effect.fail(result.failure) : Effect.succeed(result.success)))).pipe(Effect.result);
         if (Result.isFailure(started)) {
           yield* enqueue(coordinatorFailure(started.failure));
           return;
         }
+        if (started.success === null) return;
+        const accepted = started.success;
 
         yield* enqueue({
           _tag: "transcript",
-          turnId: started.success.userTurnId,
+          turnId: accepted.userTurnId,
           text: transcript,
           final: true,
         });
@@ -398,8 +405,8 @@ export const coordinateCall = <E>(
         const fiber = yield* Deferred.await(gate).pipe(
           Effect.andThen(
             runGeneration({
-              responseId: started.success.responseId,
-              turns: started.success.turns,
+              responseId: accepted.responseId,
+              turns: accepted.turns,
             }),
           ),
           Effect.forkScoped,
@@ -407,9 +414,9 @@ export const coordinateCall = <E>(
         const installed = yield* stateLock.withPermit(
           Effect.gen(function* () {
             const current = yield* Ref.get(state);
-            if (current.activeResponseId !== started.success.responseId) return false;
+            if (current.activeResponseId !== accepted.responseId) return false;
             yield* Ref.set(currentGeneration, {
-              responseId: started.success.responseId,
+              responseId: accepted.responseId,
               fiber,
             });
             return true;
@@ -434,7 +441,7 @@ export const coordinateCall = <E>(
             final: false,
           });
         }
-        if (event.kind === "EndOfTurn") yield* beginResponse(event.transcript);
+        if (event.kind === "EndOfTurn") yield* beginResponse(event);
       });
 
       const handleDeepgramEvent = Effect.fnUntraced(function*(event: FluxEvent) {
@@ -449,6 +456,9 @@ export const coordinateCall = <E>(
             break;
           case "Warning":
             yield* enqueue(failureOutput("deepgram", "Deepgram reported a warning", true));
+            break;
+          case "RepeatRequired":
+            yield* enqueue(failureOutput("deepgram", "Recognition restarted without a complete utterance. Please repeat after a pause.", true));
             break;
           case "FatalError":
             yield* shutdown(
@@ -506,6 +516,7 @@ export const coordinateCall = <E>(
 
       const shutdown = Effect.fnUntraced(function*(terminalFailure?: CallOutput) {
         if (yield* Ref.getAndSet(shuttingDown, true)) return;
+        yield* Queue.end(audioInput);
         const active = yield* stateLock.withPermit(
           Effect.gen(function* () {
             const current = yield* Ref.get(state);
@@ -556,15 +567,15 @@ export const coordinateCall = <E>(
 
       const handleInput = Effect.fnUntraced(function*(event: CallInput) {
         switch (event._tag) {
-          case "audio":
-            yield* deepgramSession.sendAudio(event.payload).pipe(
-              Effect.catch(() =>
-                shutdown(
-                  failureOutput("deepgram", "Sending audio to Deepgram failed", false),
-                ),
-              ),
-            );
+          case "audio": {
+            // Recovery may replay up to ten seconds. Do not block control/ACK ingestion on it.
+            const accepted = yield* Ref.modify(queuedAudioBytes, (bytes) => {
+              if (bytes + event.payload.length > 320000 || !Queue.offerUnsafe(audioInput, event.payload)) return [false, bytes] as const;
+              return [true, bytes + event.payload.length] as const;
+            });
+            if (!accepted) yield* shutdown(failureOutput("deepgram", "Recognition input backlog exceeded its bounded capacity", false));
             break;
+          }
           case "playbackAck": {
             const acknowledged = yield* updateState((current) => {
               const result = acknowledgePlayback(
@@ -593,6 +604,15 @@ export const coordinateCall = <E>(
         }
       });
 
+      yield* Stream.fromQueue(audioInput).pipe(
+        Stream.runForEach((bytes) => Ref.update(queuedAudioBytes, (count) => count - bytes.length).pipe(
+          Effect.andThen(deepgramSession.sendAudio(bytes)),
+        )),
+        Effect.catch(() => Ref.get(shuttingDown).pipe(Effect.flatMap((closing) => closing ? Effect.void :
+          shutdown(failureOutput("deepgram", "Sending audio to Deepgram failed", false)),
+        ))),
+        Effect.forkScoped,
+      );
       yield* Effect.forever(deepgramSession.receive.pipe(
         Effect.flatMap((event) =>
           Ref.get(shuttingDown).pipe(

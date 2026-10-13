@@ -1,4 +1,4 @@
-import { Context, Effect, Layer, Schema, Scope } from "effect";
+import { Context, Deferred, Effect, Exit, Layer, Ref, Schema, Scope, Semaphore } from "effect";
 
 const RequestId = Schema.NonEmptyString;
 const ProviderSequence = Schema.Natural;
@@ -108,6 +108,9 @@ export const FluxEvent = Schema.Union([
     turnIndex: Schema.Natural,
     transcript: Schema.String,
     endOfTurnConfidence: NumberLike,
+    audioWindowEnd: Schema.optionalKey(NumberLike),
+    audioEnd: Schema.optionalKey(Schema.Natural),
+    recognitionEpoch: Schema.optionalKey(Schema.Natural),
   }),
   Schema.Struct({
     _tag: Schema.Literal("Configured"),
@@ -134,6 +137,7 @@ export const FluxEvent = Schema.Union([
     code: Schema.String,
     description: Schema.String,
   }),
+  Schema.Struct({ _tag: Schema.Literal("RepeatRequired") }),
 ]);
 export type FluxEvent = typeof FluxEvent.Type;
 
@@ -193,6 +197,7 @@ export interface FluxConfigureOptions {
 
 export interface FluxSession {
   readonly receive: Effect.Effect<FluxEvent, DeepgramError>;
+  readonly commitTurn: <A, E>(event: FluxEvent & { _tag: "Turn" }, accept: Effect.Effect<A, E>) => Effect.Effect<A | null, E>;
   readonly sendAudio: (
     bytes: Uint8Array,
   ) => Effect.Effect<void, DeepgramTransportError>;
@@ -261,6 +266,7 @@ const mapServerMessage = (message: DeepgramServerMessage): FluxEvent => {
         turnIndex: message.turn_index,
         transcript: message.transcript,
         endOfTurnConfidence: message.end_of_turn_confidence,
+        audioWindowEnd: message.audio_window_end,
       };
     case "ConfigureSuccess":
       return {
@@ -348,18 +354,159 @@ export class DeepgramFlux extends Context.Service<
         apiKey: string,
         options: FluxOptions = {},
       ) {
-        const connection = yield* transport.connect(
-          buildFluxUrl(options),
-          deepgramAuthHeaders(apiKey),
-        );
+        const parent = yield* Effect.scope;
+        const sender = yield* Semaphore.make(1);
+        const acceptance = yield* Semaphore.make(1);
+        const bytesPerSecond = (options.sampleRate ?? 16000) * 2;
+        const limit = bytesPerSecond * 10;
+        const catchingUp = yield* Ref.make(false);
+        const audio = yield* Ref.make({ bytes: new Uint8Array(), start: 0, end: 0, committed: 0 });
+        const suppressed = yield* Ref.make(false);
+        const repeatRequired = yield* Ref.make(false);
+        const configuration = yield* Ref.make<string | null>(null);
+        const connect = Effect.fnUntraced(function*(epoch: number) {
+          const scope = yield* Scope.fork(parent);
+          const retired = yield* Deferred.make<void>();
+          const connection = yield* transport.connect(
+            buildFluxUrl(options), deepgramAuthHeaders(apiKey),
+          ).pipe(Scope.provide(scope), Effect.onError(() => Scope.close(scope, Exit.void)));
+          return { connection, scope, retired, origin: 0, epoch };
+        });
+        type PhysicalSession = { connection: DeepgramConnection; scope: Scope.Closeable; retired: Deferred.Deferred<void>; origin: number; epoch: number };
+        // null is reconstructing; closed is terminal and can never be overwritten.
+        const current = yield* Ref.make<PhysicalSession | null | "closed">(yield* connect(0));
+        const writePcm = Effect.fnUntraced(function*(session: PhysicalSession, bytes: Uint8Array) {
+          for (let offset = 0; offset < bytes.length; offset += 2560) {
+            if ((yield* Ref.get(current)) === "closed") return;
+            const chunk = bytes.subarray(offset, offset + 2560);
+            yield* session.connection.sendBinary(chunk);
+            if (yield* Ref.get(catchingUp)) {
+              yield* Effect.sleep(chunk.length * 1000 / bytesPerSecond / 1.25);
+            }
+          }
+        });
+        // Only the sender permit replaces a physical session or writes PCM. Receives never hold it.
+        const reconstruct = Effect.fnUntraced(function*(lost: PhysicalSession) {
+          let physical = lost;
+          // Bound consecutive losses during one reconstruction, not the call's lifetime.
+          for (let attempt = 0; attempt < 3; attempt++) {
+            const retired = yield* acceptance.withPermit(Ref.modify(current, (owned) =>
+              owned === physical ? [true, null] as const : [false, owned] as const,
+            ));
+            if (!retired) return;
+            yield* Deferred.succeed(physical.retired, undefined);
+            yield* Scope.close(physical.scope, Exit.void);
+            const connected = yield* connect(physical.epoch + 1);
+            const retained = yield* Ref.get(audio);
+            const complete = retained.start <= retained.committed;
+            physical = { ...connected, origin: complete ? retained.committed : retained.end };
+            const installed = yield* Ref.modify(current, (owned) => owned === null
+              ? [true, physical] as const : [false, owned] as const);
+            if (!installed) {
+              yield* Scope.close(physical.scope, Exit.void);
+              return;
+            }
+            if (!complete) {
+              yield* Ref.set(audio, { bytes: new Uint8Array(), start: retained.end, end: retained.end, committed: retained.end });
+              yield* Ref.set(suppressed, true);
+              yield* Ref.set(repeatRequired, true);
+            }
+            yield* Ref.set(catchingUp, true);
+            const restored = yield* Effect.gen(function*() {
+              const config = yield* Ref.get(configuration);
+              if (config !== null) yield* physical.connection.sendText(config);
+              if (complete) yield* writePcm(physical, retained.bytes);
+            }).pipe(Effect.result);
+            if (restored._tag === "Success") {
+              yield* Effect.logInfo("Deepgram recognition session reconstructed");
+              return;
+            }
+            if (!restored.failure.sessionLost || attempt === 2) return yield* restored.failure;
+          }
+        });
+        const receive: FluxSession["receive"] = Effect.suspend(() => Effect.gen(function*() {
+          const session = yield* sender.withPermit(Ref.get(current));
+          if (session === null || session === "closed") return yield* Effect.interrupt;
+          if (yield* Ref.getAndSet(repeatRequired, false)) return { _tag: "RepeatRequired" } as const;
+          const received = yield* Effect.raceFirst(
+            session.connection.receiveText.pipe(Effect.result),
+            Deferred.await(session.retired).pipe(Effect.as(null)),
+          );
+          if (received === null) return yield* receive;
+          if ((yield* Ref.get(current)) !== session) return yield* receive;
+          if (received._tag === "Failure") {
+            if (!received.failure.sessionLost) return yield* received.failure;
+            yield* sender.withPermit(reconstruct(session));
+            return yield* receive;
+          }
+          const event = yield* decodeFluxMessage(received.success);
+          if (event._tag !== "Turn") return event;
+          const end = Number(event.audioWindowEnd);
+          if (!Number.isFinite(end) || end < 0) {
+            return yield* new DeepgramProtocolError({ reason: "Deepgram returned an invalid audio boundary" });
+          }
+          const retained = yield* Ref.get(audio);
+          const audioEnd = Math.min(retained.end, session.origin + Math.round(end * bytesPerSecond / 2) * 2);
+          if (audioEnd <= retained.committed && retained.committed > 0) return yield* receive;
+          if (event.kind === "EndOfTurn") {
+            if (audioEnd <= retained.committed) return yield* receive;
+            if (yield* Ref.getAndSet(suppressed, false)) {
+              yield* Ref.update(audio, (latest) => ({
+                ...latest, committed: audioEnd, start: Math.max(latest.start, audioEnd),
+                bytes: latest.bytes.slice(Math.max(0, audioEnd - latest.start)),
+              }));
+              return yield* receive;
+            }
+          } else if (yield* Ref.get(suppressed)) return yield* receive;
+          return { ...event, audioEnd, recognitionEpoch: session.epoch };
+        }));
+        const sendAudio = Effect.fnUntraced(function*(bytes: Uint8Array) {
+          yield* sender.withPermit(Effect.gen(function*() {
+            if ((yield* Ref.get(current)) === "closed") return;
+            yield* Ref.update(audio, (previous) => {
+              const joined = new Uint8Array(previous.bytes.length + bytes.length);
+              joined.set(previous.bytes);
+              joined.set(bytes, previous.bytes.length);
+              const kept = joined.slice(Math.max(0, joined.length - limit));
+              return { ...previous, bytes: kept, end: previous.end + bytes.length, start: previous.end + bytes.length - kept.length };
+            });
+            const session = yield* Ref.get(current);
+            if (session === null || session === "closed") return;
+            yield* writePcm(session, bytes).pipe(Effect.catch((error) =>
+              error.sessionLost ? reconstruct(session) : Effect.fail(error),
+            ));
+          }));
+        });
 
         const session: FluxSession = {
-          receive: connection.receiveText.pipe(Effect.flatMap(decodeFluxMessage)),
-          sendAudio: connection.sendBinary,
-          forceEndTurn: connection.sendText(JSON.stringify({ type: "ForceEndTurn" })),
+          receive,
+          commitTurn: (event, accept) => acceptance.withPermit(Effect.gen(function*() {
+            const physical = yield* Ref.get(current);
+            if (physical === null || physical === "closed" || physical.epoch !== event.recognitionEpoch) return null;
+            const value = yield* accept;
+            yield* Ref.update(audio, (latest) => {
+              const committed = Math.max(latest.committed, event.audioEnd ?? latest.committed);
+              return { ...latest, committed, start: Math.max(latest.start, committed), bytes: latest.bytes.slice(Math.max(0, committed - latest.start)) };
+            });
+            return value;
+          })),
+          sendAudio,
+          forceEndTurn: sender.withPermit(Ref.get(current).pipe(Effect.flatMap((physical) =>
+            physical === null || physical === "closed" ? Effect.void : physical.connection.sendText(JSON.stringify({ type: "ForceEndTurn" }))))),
           configure: (configureOptions) =>
-            connection.sendText(configureMessage(configureOptions)),
-          closeStream: connection.sendText(JSON.stringify({ type: "CloseStream" })),
+            sender.withPermit(Effect.gen(function*() {
+              const config = configureMessage(configureOptions);
+              yield* Ref.set(configuration, config);
+              const physical = yield* Ref.get(current);
+              if (physical !== null && physical !== "closed") yield* physical.connection.sendText(config);
+            })),
+          closeStream: Effect.gen(function*() {
+            const physical = yield* Ref.getAndSet(current, "closed");
+            if (physical !== null && physical !== "closed") {
+              yield* Deferred.succeed(physical.retired, undefined);
+              yield* Scope.close(physical.scope, Exit.void);
+            }
+          }),
         };
         return session;
       });

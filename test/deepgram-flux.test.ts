@@ -1,11 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Effect, Fiber, Layer, Queue, Schema, Scope } from "effect";
+import { Deferred, Effect, Fiber, Layer, Queue, Schema, Scope } from "effect";
 import {
   buildFluxUrl,
   decodeFluxMessage,
   deepgramSocketFailure,
   DeepgramFlux,
   DeepgramTransport,
+  DeepgramTransportError,
   type DeepgramConnection,
   FluxEvent,
 } from "../src/deepgram-flux.js";
@@ -51,7 +52,194 @@ const makeFakeTransport = Effect.gen(function* () {
 const provideFake = <A, E>(effect: Effect.Effect<A, E, DeepgramFlux | Scope.Scope>, fake: FakeTransport) =>
   effect.pipe(Effect.provide(DeepgramFlux.layer), Effect.provide(fake.layer));
 
+const makeRecoveringTransport = Effect.gen(function* () {
+  const control = { replacementGate: Effect.void, failReplacementAfter: -1, wakeOnClose: true };
+  const sockets: Array<{
+    inbound: Queue.Queue<string | DeepgramTransportError>;
+    sent: Array<Uint8Array>;
+    failSend: boolean;
+    closed: boolean;
+  }> = [];
+  const layer = Layer.succeed(DeepgramTransport, DeepgramTransport.of({
+    connect: () => Effect.acquireRelease(Effect.gen(function* () {
+      const socket = {
+        inbound: yield* Queue.unbounded<string | DeepgramTransportError>(),
+        sent: [] as Array<Uint8Array>, failSend: false, closed: false,
+      };
+      sockets.push(socket);
+      return {
+        socket,
+        receiveText: Queue.take(socket.inbound).pipe(Effect.flatMap((value) =>
+          typeof value === "string" ? Effect.succeed(value) : Effect.fail(value))),
+        sendBinary: (bytes: Uint8Array) => Effect.suspend(() => {
+          if (socket.failSend || (sockets.indexOf(socket) === 1 && socket.sent.length === control.failReplacementAfter)) return Effect.fail(new DeepgramTransportError({ operation: "send", reason: "lost", sessionLost: true }));
+          return Effect.sync(() => { socket.sent.push(bytes.slice()); });
+        }),
+        sendText: () => Effect.void,
+      };
+    }), ({ socket }) => Effect.sync(() => { socket.closed = true; }).pipe(
+      Effect.andThen(Effect.suspend(() => control.wakeOnClose
+        ? Queue.offer(socket.inbound, new DeepgramTransportError({ operation: "receive", reason: "reader released", closeCode: 1000 })) : Effect.void)),
+    )).pipe(Effect.tap(() => sockets.length > 1 ? control.replacementGate : Effect.void)),
+  }));
+  return { sockets, layer, control };
+});
+
+const endOfTurn = (seconds: number) => JSON.stringify({
+  type: "TurnInfo", request_id: "request", sequence_id: 1, event: "EndOfTurn",
+  turn_index: 0, audio_window_start: 0, audio_window_end: seconds,
+  transcript: "A distinct utterance", words: [], end_of_turn_confidence: 0.9,
+});
+
 describe("Deepgram Flux", () => {
+  it.live("does not replay the last sample at an exact floating-point boundary", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeRecoveringTransport;
+      yield* Effect.scoped(Effect.gen(function* () {
+        const session = yield* (yield* DeepgramFlux).open("token");
+        yield* session.sendAudio(new Uint8Array(2002));
+        yield* Queue.offer(fake.sockets[0]!.inbound, endOfTurn(0.0625625));
+        const final = yield* session.receive;
+        expect(final).toMatchObject({ _tag: "Turn", audioEnd: 2002 });
+        if (final._tag !== "Turn") throw new Error("Expected final");
+        yield* session.commitTurn(final, Effect.void);
+        yield* Queue.offer(fake.sockets[0]!.inbound, new DeepgramTransportError({ operation: "receive", reason: "lost", sessionLost: true }));
+        const receiving = yield* Effect.forkChild(session.receive);
+        yield* Effect.repeat(Effect.yieldNow, { while: () => fake.sockets.length < 2 });
+        yield* Queue.offer(fake.sockets[1]!.inbound, '{"type":"Connected","request_id":"new","sequence_id":0}');
+        yield* Fiber.join(receiving);
+        expect(fake.sockets[1]!.sent).toEqual([]);
+      }).pipe(Effect.provide(DeepgramFlux.layer), Effect.provide(fake.layer)));
+    }).pipe(Effect.timeout("3 seconds")),
+  );
+
+  it.live("fences retired receive errors and rejects an old final during gated reconstruction", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeRecoveringTransport;
+      const gate = yield* Deferred.make<void>();
+      fake.control.replacementGate = Deferred.await(gate);
+      fake.control.wakeOnClose = false;
+      yield* Effect.scoped(Effect.gen(function* () {
+        const session = yield* (yield* DeepgramFlux).open("token");
+        yield* session.sendAudio(new Uint8Array([1, 2, 3, 4]));
+        yield* Queue.offer(fake.sockets[0]!.inbound, endOfTurn(1 / 16000));
+        const old = yield* session.receive;
+        if (old._tag !== "Turn") throw new Error("Expected final");
+        const receiving = yield* Effect.forkChild(session.receive);
+        fake.sockets[0]!.failSend = true;
+        const sending = yield* Effect.forkChild(session.sendAudio(new Uint8Array([5, 6])));
+        yield* Effect.repeat(Effect.yieldNow, { while: () => fake.sockets.length < 2 });
+        let accepted = false;
+        expect(yield* session.commitTurn(old, Effect.sync(() => { accepted = true; }))).toBeNull();
+        expect(accepted).toBe(false);
+        yield* Deferred.succeed(gate, undefined);
+        yield* Fiber.join(sending);
+        yield* Queue.offer(fake.sockets[1]!.inbound, endOfTurn(3 / 16000));
+        expect(yield* Fiber.join(receiving)).toMatchObject({ _tag: "Turn", audioEnd: 6 });
+        expect(fake.sockets).toHaveLength(2);
+        expect(fake.sockets[1]!.sent).toEqual([new Uint8Array([1, 2, 3, 4, 5, 6])]);
+      }).pipe(Effect.provide(DeepgramFlux.layer), Effect.provide(fake.layer)));
+    }).pipe(Effect.timeout("3 seconds")),
+  );
+
+  it.live("hangup wins while a replacement is being acquired", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeRecoveringTransport;
+      const gate = yield* Deferred.make<void>();
+      fake.control.replacementGate = Deferred.await(gate);
+      yield* Effect.scoped(Effect.gen(function* () {
+        const session = yield* (yield* DeepgramFlux).open("token");
+        fake.sockets[0]!.failSend = true;
+        const sending = yield* Effect.forkChild(session.sendAudio(new Uint8Array([5, 6])));
+        yield* Effect.repeat(Effect.yieldNow, { while: () => fake.sockets.length < 2 });
+        yield* session.closeStream;
+        yield* Deferred.succeed(gate, undefined);
+        yield* Fiber.join(sending);
+        expect(fake.sockets[1]!.sent).toEqual([]);
+        expect(fake.sockets.every((socket) => socket.closed)).toBe(true);
+      }).pipe(Effect.provide(DeepgramFlux.layer), Effect.provide(fake.layer)));
+    }).pipe(Effect.timeout("3 seconds")),
+  );
+
+  it.live("reconstructs again when the replacement is lost partway through PCM replay", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeRecoveringTransport;
+      fake.control.failReplacementAfter = 1;
+      yield* Effect.scoped(Effect.gen(function* () {
+        const session = yield* (yield* DeepgramFlux).open("token");
+        const pcm = Uint8Array.from({ length: 5120 }, (_, index) => index % 251);
+        yield* session.sendAudio(pcm);
+        fake.sockets[0]!.failSend = true;
+        yield* session.sendAudio(new Uint8Array([252, 253]));
+        expect(fake.sockets).toHaveLength(3);
+        expect(Uint8Array.from(fake.sockets[2]!.sent.flatMap((chunk) => [...chunk]))).toEqual(Uint8Array.from([...pcm, 252, 253]));
+      }).pipe(Effect.provide(DeepgramFlux.layer), Effect.provide(fake.layer)));
+    }).pipe(Effect.timeout("3 seconds")),
+  );
+
+  it.live("reconstructs only uncommitted PCM after receive and send session loss", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeRecoveringTransport;
+      yield* Effect.scoped(Effect.gen(function* () {
+        const session = yield* (yield* DeepgramFlux).open("token");
+        yield* session.sendAudio(new Uint8Array([10, 20, 30, 40, 50, 60]));
+        yield* Queue.offer(fake.sockets[0]!.inbound, endOfTurn(2 / 16000));
+        const first = yield* session.receive;
+        expect(first).toMatchObject({ _tag: "Turn", audioEnd: 4 });
+        if (first._tag !== "Turn") throw new Error("Expected turn");
+        yield* session.commitTurn(first, Effect.void);
+        yield* Queue.offer(fake.sockets[0]!.inbound, new DeepgramTransportError({ operation: "receive", reason: "lost", sessionLost: true }));
+        const receiving = yield* Effect.forkChild(session.receive);
+        yield* Effect.repeat(Effect.yieldNow, { while: () => fake.sockets.length < 2 });
+        yield* Queue.offer(fake.sockets[1]!.inbound, endOfTurn(1 / 16000));
+        const second = yield* Fiber.join(receiving);
+        expect(second).toMatchObject({ _tag: "Turn", audioEnd: 6 });
+        expect(fake.sockets[1]!.sent).toEqual([new Uint8Array([50, 60])]);
+        expect(fake.sockets[0]!.closed).toBe(true);
+        if (second._tag !== "Turn") throw new Error("Expected turn");
+        yield* session.commitTurn(second, Effect.void);
+        fake.sockets[1]!.failSend = true;
+        yield* session.sendAudio(new Uint8Array([70, 80]));
+        expect(fake.sockets).toHaveLength(3);
+        expect(fake.sockets[2]!.sent).toEqual([new Uint8Array([70, 80])]);
+        yield* Queue.offer(fake.sockets[2]!.inbound, endOfTurn(1 / 16000));
+        expect(yield* session.receive).toMatchObject({ _tag: "Turn", audioEnd: 8 });
+      }).pipe(Effect.provide(DeepgramFlux.layer), Effect.provide(fake.layer)));
+      expect(fake.sockets.every((socket) => socket.closed)).toBe(true);
+    }).pipe(Effect.timeout("3 seconds")),
+  );
+
+  it.live("asks for a repeat after overflow and discards only the damaged utterance", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeRecoveringTransport;
+      yield* Effect.scoped(Effect.gen(function* () {
+        const session = yield* (yield* DeepgramFlux).open("token");
+        yield* session.sendAudio(new Uint8Array(320002));
+        yield* Queue.offer(fake.sockets[0]!.inbound, new DeepgramTransportError({ operation: "receive", reason: "lost", sessionLost: true }));
+        expect(yield* session.receive).toEqual({ _tag: "RepeatRequired" });
+        expect(fake.sockets[1]!.sent).toEqual([]);
+        yield* session.sendAudio(new Uint8Array([1, 2]));
+        yield* Queue.offer(fake.sockets[1]!.inbound, endOfTurn(1 / 16000));
+        yield* session.sendAudio(new Uint8Array([3, 4]));
+        yield* Queue.offer(fake.sockets[1]!.inbound, endOfTurn(2 / 16000));
+        expect(yield* session.receive).toMatchObject({ _tag: "Turn", audioEnd: 320006 });
+      }).pipe(Effect.provide(DeepgramFlux.layer), Effect.provide(fake.layer)));
+    }).pipe(Effect.timeout("3 seconds")),
+  );
+
+  it.effect("does not reconstruct ordinary provider failures", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeRecoveringTransport;
+      yield* Effect.scoped(Effect.gen(function* () {
+        const session = yield* (yield* DeepgramFlux).open("token");
+        const error = new DeepgramTransportError({ operation: "receive", reason: "unauthorized" });
+        yield* Queue.offer(fake.sockets[0]!.inbound, error);
+        expect(yield* session.receive.pipe(Effect.result)).toMatchObject({ _tag: "Failure", failure: error });
+        expect(fake.sockets).toHaveLength(1);
+      }).pipe(Effect.provide(DeepgramFlux.layer), Effect.provide(fake.layer)));
+    }),
+  );
+
   it("builds the v2 raw PCM URL with repeated language hints", () => {
     const url = new URL(
       buildFluxUrl({
@@ -94,7 +282,6 @@ describe("Deepgram Flux", () => {
       expect(fake.sent.slice(1)).toEqual([
         '{"type":"ForceEndTurn"}',
         '{"type":"Configure","language_hints":["en"],"numerals":true}',
-        '{"type":"CloseStream"}',
       ]);
       expect(fake.closes).toEqual(["closed"]);
     }),
@@ -127,6 +314,7 @@ describe("Deepgram Flux", () => {
         turnIndex: 3,
         transcript: "Hello there",
         endOfTurnConfidence: 0.91,
+        audioWindowEnd: 1.3,
       });
     }),
   );

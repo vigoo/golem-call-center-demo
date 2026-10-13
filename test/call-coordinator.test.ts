@@ -53,6 +53,7 @@ const makeHarness = (
   responseStreams: ReadonlyArray<Stream.Stream<ResponseGenerationEvent, AiError.AiError>>,
   onTtsReceive: Effect.Effect<void> = Effect.void,
   onFluxReceived: (event: FluxEvent) => Effect.Effect<void> = () => Effect.void,
+  onSendAudio: Effect.Effect<void> = Effect.void,
 ) =>
   Effect.gen(function* () {
     const fluxEvents = yield* Queue.unbounded<FluxEvent, DeepgramTransportError>();
@@ -68,7 +69,8 @@ const makeHarness = (
 
     const fluxSession: FluxSession = {
       receive: Queue.take(fluxEvents).pipe(Effect.tap(onFluxReceived)),
-      sendAudio: (payload) => Effect.sync(() => sentAudio.push(payload)),
+      commitTurn: (_event, accept) => accept,
+      sendAudio: (payload) => Effect.sync(() => sentAudio.push(payload)).pipe(Effect.andThen(onSendAudio)),
       forceEndTurn: Effect.void,
       configure: () => Effect.void,
       closeStream: Ref.update(deepgramClosed, (count) => count + 1).pipe(
@@ -203,6 +205,24 @@ const runCall = (
   );
 
 describe("call coordinator", () => {
+  it.effect("processes interrupt and hangup while recognition audio sending is blocked", () =>
+    Effect.gen(function* () {
+      const sending = yield* Deferred.make<void>();
+      const harness = yield* makeHarness([], Effect.void, () => Effect.void,
+        Deferred.succeed(sending, undefined).pipe(Effect.andThen(Effect.never)));
+      const input = yield* Queue.unbounded<CallInput, Cause.Done>();
+      const states: Array<SavedCallState> = [];
+      const fiber = yield* Effect.forkChild(runCall(input, harness, states));
+      yield* Queue.offer(input, { _tag: "audio", sequence: 0, capturedAt: 0, payload: new Uint8Array([1, 2]) });
+      yield* Deferred.await(sending);
+      yield* Queue.offer(input, { _tag: "interrupt" });
+      yield* Queue.offer(input, { _tag: "hangup" });
+      expect(yield* Fiber.join(fiber)).toContainEqual({ _tag: "interruptConfirmed" });
+      expect(states.at(-1)?.phase).toBe("ended");
+      expect(yield* Ref.get(harness.deepgramClosed)).toBe(1);
+    }),
+  );
+
   it.effect("streams a committed turn through generation and synthesized audio", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness([
