@@ -720,3 +720,54 @@ All 76 unit tests and typecheck pass. README includes direct section links.
 Only static explanation assets, their browser test and documentation changed. The local/live and
 integration/mock deployments were updated without resetting or updating existing call agents;
 no SDK implementation, provider protocol, cloud deployment or additional ticket changed.
+
+## Provider-aware recovery implementation — 2026-10-13
+
+Continue in separately reviewed commits, using CLI `v1.6.0-rc2-25-gfd734d5670` and the
+local SDK at `fd734d5670e587ed50b04278749caa771281ed66`. Testing uses the existing isolated
+ports and a new `.amp/in/local-golem/data-recovery-rc2` directory; older data is preserved.
+
+1. Require the reduced GOL-799 reproducer to pass and record the existing application recovery
+   matrix as a baseline (not a prerequisite that all application recovery is already green).
+   Opt Deepgram and ElevenLabs into `report-connection-loss`, preserving a typed
+   session-loss classification through adapter errors. Ordinary network/provider errors remain
+   distinct; do not silently retry malformed messages or account failures.
+2. Implement provider-session ownership and recovery. One owner replaces each lost session;
+   concurrent operations on the old session cannot publish obsolete results. Scope each physical
+   session separately, and never hold a recovery lock across a blocking receive. Retain bounded
+   uncommitted PCM for Deepgram, with a new recognition epoch and session-relative time mapping.
+   If the beginning is unavailable, discard the partial utterance and explicitly ask for a repeat.
+   Replace interrupted synthesis with a new response ID tied to the existing committed user turn.
+   Reuse complete answer text when available; otherwise regenerate the foreground OpenAI answer.
+   Never splice a new answer suffix onto old text/audio. Clear old playback before replacement audio.
+3. Exercise deployed crash recovery during STT, LLM and TTS, repeated crashes, partial playback,
+   interruption/hangup during reconstruction and utterance-buffer overflow. Strengthen fixtures to
+   reject text sent to uninitialized TTS contexts and distinguish old/new connections. Verify
+   continued conversation and output closure, not merely an absence of traps. Run browser checks.
+4. Update documentation and walkthrough to describe tested behavior and remaining limitations.
+   Inspect affected rendered states, obtain Oracle review, and commit the acceptance evidence.
+
+Each step ends with targeted checks, typechecking, an Oracle review, and a separate commit.
+Preserve existing snapshot and browser wire shapes. Existing agents keep their original
+component; use fresh test call IDs. No reset, cloud deployment, push, or SDK edits are planned.
+Recovery preserves the call and committed conversation, not provider sessions or identical audio.
+An answer can be repeated, especially when an audible chunk's ACK was lost. Browser reload
+recovery, exactly-once hearing, OpenAI background/cursor resume, and raw-byte transport remain
+outside this implementation. Live-provider checks are reported separately from protocol fixtures.
+
+Oracle design amendments: response restart allocates only a response attempt, never another
+user turn, and preserves complete text before invalidation. A finished answer whose audio is
+already durable is not restarted merely because an idle provider socket was lost. Interrupt,
+new speech and hangup revoke restart eligibility. STT retains samples before send, uses absolute
+sample ranges and a per-session origin (not capture wall-clock time), commits each epoch/turn
+once, and trims only through the accepted end-of-turn boundary. Replay precedes the live tail.
+Overflow suppresses the damaged fragment through its end-of-turn before re-arming; the repeat
+request is a visible recoverable failure, not an invented user turn or a spoken system answer.
+
+Loss reporters must not join themselves or wait on a recovery owner joining them. Control
+ingestion stays independent of a bounded audio sender. Retired sessions have separate scopes;
+no lock spans receive, fiber cancellation or queue-capacity waits. Replacement publication must
+wait until its clear event is in the same output queue, not merely an intermediary control queue.
+Recheck ownership after acquisitions so hangup/new speech wins. Tests must distinguish concurrent
+send/receive loss, OpenAI/TTS loss observation order, completion races, blocked reconstruction,
+output saturation, overflow followed by a healthy turn, and snapshot validity after replacement.
