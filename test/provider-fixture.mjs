@@ -5,7 +5,8 @@ import { WebSocketServer } from "ws";
 const newScenario = (settings = {}) => ({ settings, counts: { stt: 0, openai: 0, elevenlabs: 0 }, connections: { stt: 0, elevenlabs: 0 }, journal: [], held: new Map(), resources: new Set(), controls: new Set(), released: false });
 let scenario = newScenario();
 const deliver = (state, stage, owner, transmit) => {
-  if (state.settings.holdStage === stage && !state.released) state.held.set(owner, { stage, transmit });
+  const hold = !(state.settings.holdFirstOnly && stage.startsWith("openai") && state.counts.openai > 1);
+  if (hold && state.settings.holdStage === stage && !state.released) state.held.set(owner, { stage, transmit });
   else transmit();
 };
 const server = createServer(async (request, response) => {
@@ -47,17 +48,20 @@ const server = createServer(async (request, response) => {
   response.writeHead(200, { "content-type": "text/event-stream" });
   const send = (event) => response.write(`data: ${JSON.stringify(event)}\n\n`);
   const splitBody = state.settings.holdStage === "openai-body";
+  const variant = state.counts.openai > 1 ? state.settings.retryVariant : undefined;
+  const prefix = variant === "text" ? "Different " : variant === "chunks" ? "Hello from " : "Hello ";
+  const suffix = variant === "text" ? "replacement answer." : variant === "chunks" ? "the fixture." : "from the fixture.";
   send({ type: "response.output_text.delta", item_id: "message-1", output_index: 0,
-    content_index: 0, sequence_number: 0, logprobs: [], delta: splitBody ? "Hello " : "Hello from the fixture." });
+    content_index: 0, sequence_number: 0, logprobs: [], delta: splitBody ? prefix : "Hello from the fixture." });
   if (splitBody) {
-    state.journal.push({ stage: "openai-body", operation: "prefix", attempt: state.counts.openai });
+    state.journal.push({ stage: "openai-body", operation: "prefix", attempt: state.counts.openai, text: prefix });
     await new Promise((resolve) => {
       response.once("close", resolve);
       deliver(state, "openai-body", response, resolve);
     });
     if (response.destroyed) return;
     send({ type: "response.output_text.delta", item_id: "message-1", output_index: 0,
-      content_index: 0, sequence_number: 1, logprobs: [], delta: "from the fixture." });
+      content_index: 0, sequence_number: 1, logprobs: [], delta: suffix });
   }
   send({ type: "response.completed", sequence_number: splitBody ? 2 : 1, response: {
     id: "fixture-response", status: "completed", model: "fixture",

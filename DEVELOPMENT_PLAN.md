@@ -1148,3 +1148,34 @@ two acceptance checks for the next step: changed prefix/chunk segmentation on re
 deduplication compares payloads, not just sequence numbers), and helper availability after interrupt
 or hangup while the obsolete provider request stays held. No general nondeterministic inference
 recovery claim is made. Existing live demo remains unchanged; no runtime/SDK changes or pushes.
+
+### Streaming isolation — adversarial validation checkpoint, 2026-10-15
+
+All18 predeclared caller/helper/both header/body crash cases passed (three fresh attempts each),
+plus the seven earlier preflights. The aggregate is
+`.amp/in/artifacts/streaming-inference-recovery-results.json`. First-response synthesis journals
+contain exactly the expected text, including helper-only crashes after published audio.
+
+Added public contract probes for early audio, cancellation without releasing the obsolete request,
+hangup without release, and persistent changed text/chunk segmentation after helper recovery.
+Initial fixture resets contaminated later cases by destroying held responses and provoking retries
+into the next fixture scenario. Corrected cleanup releases requests only after recording outcomes,
+then waits for the helper to settle before resetting. Do not count those contaminated runs.
+
+The corrected bounded run (`.amp/in/streaming-inference-adversarial.log`) passes prefix and both
+hangup cases but fails both continuation-after-cancel cases: interrupt is confirmed, yet the next
+generation queues on the per-call helper behind the obsolete HTTP request. The next change will
+key the helper by the existing stable callId/responseId, preserving replay identity while allowing
+a fresh response to proceed independently. Oracle reviewed and recommended this boundary.
+
+Persistent changed prefixes/chunks fail EventConflict after runtime retries; no mixed answer or
+duplicate synthesis is committed. However, the remote error-context terminal traps the consuming
+CallAgent itself, closing output without an application failure item. Oracle traced this to the
+host stream receive/Wasmtime producer boundary, not an Effect failure/defect that catchCause could
+contain. This needs a distinct runtime/SDK error-propagation contract; do not weaken replay safety
+or pretend a TypeScript catch solves it. Duplicate research found no dedicated ticket; existing
+Scala fatal-stream tests explicitly expect a fatal consumer invocation. As this may be a feature
+contract decision, discuss it with the user before filing a feature request.
+
+The conflict probes remain explicit failing acceptance scenarios, not silently green controls.
+They and their retained journals are the reproducer. No runtime implementation was changed.
