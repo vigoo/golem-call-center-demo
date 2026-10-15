@@ -1015,3 +1015,20 @@ No production code or acceptance assertion was changed. Full-server restart, rep
 on one call, deployed partial-ACK/overflow races and real-provider crash compatibility remain
 unverified. Browser rendering was not changed or rerun in this verification step; existing
 walkthrough GOL-862 labels predate these results. The README is the current acceptance summary.
+
+### Local crash-demo controller — 2026-10-15
+
+Added `demo-server.mjs`, a loopback-only controller/proxy at localhost:19008. It forwards the
+console and streaming traffic to the selected local or integration Golem hostname, preserving
+the deployed CSP and avoiding browser management credentials or cross-origin crash calls.
+Its same-origin JSON endpoint validates a bounded call ID and invokes only
+`golem agent simulate-crash CallAgent(...)` in an allowlisted local environment, without a shell.
+One command runs at a time, with a 30-second timeout and no automatic retry. The response
+confirms command completion, not successful recovery. It never kills the Golem server.
+
+Real HTTP verification through the proxy created a fresh fixture call, completed its first
+answer, invoked the actual CLI through the controller, observed a distinct post-crash transcript
+and confirmed hangup/output closure. Missing-origin, malformed JSON and invalid-ID requests
+were rejected. Oracle reviewed this backend step and found no blockers. Frontend wiring is
+the next separate commit. A fresh HTTP-stage crash recheck still failed on rc2-68; GOL-906
+was checked live and remains Backlog, so arbitrary-time clicks must retain that warning.
