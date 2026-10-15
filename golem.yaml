@@ -37,6 +37,12 @@ environments:
     version:
       git:
         allowDirty: true
+  inference-recovery:
+    server: local
+    componentPresets: [mock, buffered]
+    version:
+      git:
+        allowDirty: true
   cloud:
     server: cloud
     deployment:
@@ -53,6 +59,7 @@ agents:
       permissions: read-only
   CallAgent:
     config:
+      bufferedInference: false
       deepgram:
         apiUrl: wss://api.deepgram.com/v2/listen
         model: flux-general-en
@@ -75,6 +82,9 @@ agents:
     presets:
       live:
         default: true
+      buffered:
+        config:
+          bufferedInference: true
       mock:
         config:
           deepgram:
@@ -83,14 +93,27 @@ agents:
             apiUrl: http://127.0.0.1:19110/v1
           elevenLabs:
             apiUrl: ws://127.0.0.1:19110
+  InferenceAgent:
+    config:
+      openAi:
+        apiUrl: https://api.openai.com/v1
+        model: gpt-4o-mini
+    presets:
+      live:
+        default: true
+      mock:
+        config:
+          openAi:
+            apiUrl: http://127.0.0.1:19110/v1
 secretDefaults:
-  integration:
+  integration: &mock-secrets
     deepgram:
       apiKey: mock-deepgram
     openAi:
       apiKey: mock-openai
     elevenLabs:
       apiKey: mock-elevenlabs
+  inference-recovery: *mock-secrets
   local:
     deepgram:
       apiKey: '{{ DEEPGRAM_API_KEY }}'
@@ -100,6 +123,11 @@ secretDefaults:
       apiKey: '{{ ELEVENLABS_API_KEY }}'
 httpApi:
   deployments:
+    inference-recovery:
+    - subdomain: call-center-recovery
+      agents:
+        CallAgent: {}
+        Web: {}
     integration:
     - subdomain: call-center-test
       agents:

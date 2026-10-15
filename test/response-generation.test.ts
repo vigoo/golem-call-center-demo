@@ -4,6 +4,7 @@ import { AiError, LanguageModel, type Prompt } from "effect/ai";
 import type { ConversationTurn } from "../src/call-protocol.js";
 import {
   ResponseGenerator,
+  collectResponseText,
   type ResponseGenerationEvent,
 } from "../src/response-generation.js";
 
@@ -45,6 +46,29 @@ const provideGenerator = <E>(
 ) => stream.pipe(Stream.provide(ResponseGenerator.layer), Stream.provide(model));
 
 describe("response generation", () => {
+  it.effect("buffers only completed inference and rejects truncated, failed or oversized output", () =>
+    Effect.gen(function* () {
+      const collect = (events: Stream.Stream<ResponseGenerationEvent, AiError.AiError>) =>
+        collectResponseText("system", turns).pipe(Effect.provide(Layer.succeed(
+          ResponseGenerator, ResponseGenerator.of({ stream: () => events }),
+        )));
+      expect(yield* collect(Stream.make(
+        { _tag: "TextDelta", text: "Hello" }, { _tag: "TextDelta", text: " there" }, { _tag: "Completed" },
+      ))).toBe("Hello there");
+      expect(yield* collect(Stream.make(
+        { _tag: "TextDelta", text: "x".repeat(65536) }, { _tag: "Completed" },
+      )).pipe(Effect.map((text) => text.length))).toBe(65536);
+      const failure = AiError.make({ module: "test", method: "stream", reason: new AiError.UnknownError({ description: "failed" }) });
+      for (const events of [
+        Stream.make({ _tag: "TextDelta" as const, text: "partial" }),
+        Stream.make({ _tag: "TextDelta" as const, text: "partial" }).pipe(Stream.concat(Stream.fail(failure))),
+        Stream.make({ _tag: "TextDelta" as const, text: "x".repeat(65537) }, { _tag: "Completed" as const }),
+      ]) {
+        expect((yield* collect(events).pipe(Effect.result))._tag).toBe("Failure");
+      }
+    }),
+  );
+
   it.effect("preserves system and committed-turn ordering", () =>
     Effect.gen(function* () {
       let capturedPrompt: Prompt.Prompt | undefined;

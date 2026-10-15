@@ -3,6 +3,7 @@ import { Schema } from "effect";
 
 // Export a value until the static extractor supports imported config classes (GOL-739).
 export const CallAgentConfig = defineConfig("CallAgent.Config", {
+  bufferedInference: Schema.Boolean,
   deepgram: Schema.Struct({
     apiKey: Schema.Redacted(Schema.String),
     apiUrl: Schema.String,

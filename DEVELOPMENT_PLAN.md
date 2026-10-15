@@ -1055,3 +1055,31 @@ Oracle identified and then approved the disposal/feedback correction; the dotted
 was reproduced before correction and is covered by the real crash test. README documents live
 and fixture controller launch modes. GOL-906 remains Backlog and a fresh HTTP-stage crash failed;
 neither arbitrary-time clicks nor live-provider/full-server recovery are acceptance claims.
+
+### Buffered inference isolation experiment — implementation checkpoint, 2026-10-15
+
+Committed all existing workspace changes before starting this experiment. Reproduced the
+unchanged direct-HTTP failure once on matching rc2-68 CLI/server and locally rebuilt SDK:
+`crash-openai-1e38cbdf-3bf5-4a5e-96c5-b512948f1e62`, retained in recovery-runs with aggregate
+`.amp/in/inference-baseline.log`. No server data was reset.
+
+Added an opt-in `bufferedInference` config (false by default). A separate durable
+`InferenceAgent(callId)` sequentially consumes the complete Effect AI response and returns text
+through durable RPC. Its oplog contains no recognition/synthesis WebSocket operations. The caller
+continues consuming both WebSockets concurrently and never receives an incomplete inference
+prefix. Buffering is bounded to 65536 UTF-16 code units. Model/API URL config and OpenAI secrets
+belong to the inference agent independently; the caller still supplies its system prompt/history.
+SavedCallState's schema is unchanged; constructor identity is recovered from snapshot context.
+
+This is deliberately not a streaming replacement: first speech waits for complete inference.
+Interrupt/hangup suppresses late caller output but may leave the remote operation running,
+incurring billing and delaying subsequent work queued on the same per-call inference owner.
+No custom durability scope, idempotence override, manual RPC retries or recognition serialization
+was introduced. Default local/live and integration streaming deployments are not switched.
+
+Created a separate local `inference-recovery` environment, mock+buffered presets and
+`call-center-recovery.localhost:19006` domain on the existing isolated server. Its first strict
+two-turn/ACK/hangup/output-closure control passed. Oracle reviewed implementation and found no
+blockers for the experiment, requested environment/origin validation and collector boundary
+tests, and checked scope and snapshot ownership. Applied those changes. Crash acceptance is
+the next checkpoint, including caller/helper/both pre-header crashes and response-body coverage.

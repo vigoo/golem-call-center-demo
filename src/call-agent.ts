@@ -8,7 +8,13 @@ import { DeepgramFlux } from "./deepgram-flux.js";
 import { DeepgramTransportLive } from "./deepgram-flux-live.js";
 import { ElevenLabsTts } from "./elevenlabs-tts.js";
 import { ElevenLabsTransportLive } from "./elevenlabs-tts-live.js";
+import { makeBufferedInferenceLayer } from "./inference-agent.js";
 import { openAiLanguageModelLayer, ResponseGenerator } from "./response-generation.js";
+
+interface CallAgentState {
+  readonly callId: typeof CallId.Type;
+  readonly state: Ref.Ref<SavedCallState>;
+}
 
 export const CallAgent = defineAgent({
   name: "CallAgent",
@@ -40,18 +46,19 @@ export const CallAgent = defineAgent({
       })],
     }),
   },
-}).implement({
-  init: () => Ref.make(initialCallState()),
-  snapshot: Snapshot.strategy<Ref.Ref<SavedCallState>, SavedCallState>({
-    save: (state) => Ref.get(state).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ValidatedCallState))),
-    restore: (saved) => Schema.decodeUnknownEffect(ValidatedCallState)(saved).pipe(
+}).implement<CallAgentState>({
+  init: ({ callId }): Effect.Effect<CallAgentState> => Ref.make(initialCallState()).pipe(Effect.map((state) => ({ callId, state }))),
+  snapshot: Snapshot.strategy<CallAgentState, SavedCallState, never, { readonly callId: typeof CallId.Type }>({
+    save: ({ state }) => Ref.get(state).pipe(Effect.flatMap(Schema.decodeUnknownEffect(ValidatedCallState))),
+    restore: (saved, { id }) => Schema.decodeUnknownEffect(ValidatedCallState)(saved).pipe(
       Effect.tap((state) => Effect.logInfo("Call snapshot restored").pipe(
         Effect.annotateLogs({ phase: state.phase, turns: state.turns.length }),
       )),
       Effect.flatMap(Ref.make),
+      Effect.map((state) => ({ callId: id.callId, state })),
     ),
   }),
-  methods: (state) => ({
+  methods: ({ callId, state }) => ({
     run: ({ input }) => Effect.gen(function* () {
       const initialState = yield* Ref.get(state);
       if (initialState.phase === "ended") {
@@ -66,7 +73,7 @@ export const CallAgent = defineAgent({
       const providers = Layer.mergeAll(
         DeepgramFlux.layer.pipe(Layer.provide(DeepgramTransportLive)),
         ElevenLabsTts.layer.pipe(Layer.provide(ElevenLabsTransportLive)),
-        ResponseGenerator.layer.pipe(Layer.provide(openAiLanguageModelLayer({
+        (yield* config.bufferedInference) ? yield* makeBufferedInferenceLayer(callId) : ResponseGenerator.layer.pipe(Layer.provide(openAiLanguageModelLayer({
           apiKey: yield* config.openAi.apiKey.get,
           apiUrl: yield* config.openAi.apiUrl,
           model: yield* config.openAi.model,
@@ -97,6 +104,6 @@ export const CallAgent = defineAgent({
         },
         systemPrompt: yield* config.openAi.systemPrompt,
       }).pipe(Stream.provide(providers));
-    }),
+    }).pipe(Effect.orDie),
   }),
 });

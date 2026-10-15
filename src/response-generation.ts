@@ -96,6 +96,28 @@ export interface OpenAiLanguageModelOptions {
   readonly model: string;
 }
 
+// Buffer only a complete response. A crash cannot expose a prefix to the caller.
+export const collectResponseText = (
+  systemPrompt: string,
+  turns: ReadonlyArray<ConversationTurn>,
+) => Effect.gen(function* () {
+  const generator = yield* ResponseGenerator;
+  let text = "";
+  let completed = false;
+  const invalid = (description: string) => AiError.make({
+    module: "InferenceAgent", method: "generate",
+    reason: new AiError.UnknownError({ description }),
+  });
+  yield* generator.stream(systemPrompt, turns).pipe(Stream.runForEach((event) => {
+    if (event._tag === "Completed") { completed = true; return Effect.void; }
+    text += event.text;
+    return text.length > 65536
+      ? Effect.fail(invalid("Buffered inference exceeded 65536 characters")) : Effect.void;
+  }));
+  if (!completed) return yield* Effect.fail(invalid("Inference ended without completion"));
+  return text;
+});
+
 export const openAiLanguageModelLayer = ({
   apiKey,
   apiUrl,

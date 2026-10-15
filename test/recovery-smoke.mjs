@@ -6,6 +6,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdir, writeFile } from "node:fs/promises";
 setDefaultResultOrder("ipv4first");
+const environment = process.env.GOLEM_TEST_ENV ?? "integration";
+assert.ok(environment === "integration" || process.env.GOLEM_TEST_ORIGIN, "Non-default environments require an explicit matching GOLEM_TEST_ORIGIN");
 const origin = process.env.GOLEM_TEST_ORIGIN ?? "http://call-center-test.localhost:19006";
 const fixture = "http://127.0.0.1:19110/test/control";
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -21,16 +23,18 @@ const failures = [];
 const attempts = Number(process.env.GOLEM_TEST_ATTEMPTS ?? 1);
 assert.ok(Number.isInteger(attempts) && attempts >= 1 && attempts <= 3, "Use one to three fixed fresh-agent attempts, never retry until green");
 
-const scenarios = ["continue-call", "slow-reader", "failure-stt", "failure-openai", "failure-elevenlabs", "interrupt-stt", "interrupt-openai", "interrupt-elevenlabs", "replay-stt", "crash-stt", "crash-openai", "crash-elevenlabs"];
-const selected = process.env.GOLEM_TEST_SCENARIO?.split(",") ?? scenarios;
+const scenarios = ["continue-call", "slow-reader", "failure-stt", "failure-openai", "failure-elevenlabs", "interrupt-stt", "interrupt-openai", "interrupt-elevenlabs", "replay-stt", "crash-stt", "crash-openai", "crash-elevenlabs", "crash-inference", "crash-both"];
+const selected = process.env.GOLEM_TEST_SCENARIO?.split(",") ?? scenarios.filter((s) => s !== "crash-inference" && s !== "crash-both");
 assert.ok(selected.every((scenario) => scenarios.includes(scenario)), "Unknown recovery scenario");
+assert.ok(environment === "inference-recovery" || !selected.some((s) => s === "crash-inference" || s === "crash-both"), "Inference-agent crash scenarios require the buffered inference-recovery deployment");
 for (const scenario of selected) {
   for (let attempt = 1; attempt <= attempts; attempt++) {
-  const [kind, stage] = scenario.split("-");
+  const [kind, targetStage] = scenario.split("-");
+  const stage = targetStage === "inference" || targetStage === "both" ? "openai" : targetStage;
   const callId = `${scenario}-${randomUUID()}`;
   const evidence = `.amp/in/recovery-runs/${callId}`;
   await mkdir(evidence, { recursive: true });
-  await writeFile(`${evidence}/metadata.json`, JSON.stringify({ callId, scenario, attempt, origin, startedAt: new Date().toISOString() }, null, 2));
+  await writeFile(`${evidence}/metadata.json`, JSON.stringify({ callId, scenario, attempt, environment, origin, startedAt: new Date().toISOString() }, null, 2));
   const base = `${origin}/calls/${callId}/run/invocations/${randomUUID()}`;
   const request = async (path, options = {}) => {
     const response = await fetch(base + path, { ...options, headers: { "Content-Type": "application/json", ...options.headers }, signal: AbortSignal.timeout(10000) });
@@ -58,10 +62,14 @@ for (const scenario of selected) {
       while ((await fixtureRequest()).pending[stage] === 0) { assert.ok(Date.now() < deadline, `${stage} not held`); await pause(50); }
     }
     if (kind === "crash" || kind === "replay") {
-      const { stdout, stderr } = await run("golem", ["agent", "simulate-crash", `CallAgent(${JSON.stringify(callId)})`, "-E", "integration", "-Y"], {
-        env: { ...process.env, GOLEM_EFFECT_GOLEM_PATH: `${process.env.HOME}/projects/golem/golem/sdks/effect` }, timeout: 30000,
-      });
-      await writeFile(`${evidence}/crash.log`, stdout + stderr);
+      const targets = targetStage === "both" ? ["CallAgent", "InferenceAgent"]
+        : targetStage === "inference" ? ["InferenceAgent"] : ["CallAgent"];
+      for (const target of targets) {
+        const { stdout, stderr } = await run("golem", ["agent", "simulate-crash", `${target}(${JSON.stringify(callId)})`, "-E", environment, "-Y"], {
+          env: { ...process.env, GOLEM_EFFECT_GOLEM_PATH: `${process.env.HOME}/projects/golem/golem/sdks/effect` }, timeout: 30000,
+        });
+        await writeFile(`${evidence}/crash-${target}.log`, stdout + stderr);
+      }
       if (kind === "crash") await fixtureRequest({ release: true });
     }
     if (kind === "slow") await pause(1500);
@@ -108,7 +116,7 @@ for (const scenario of selected) {
       const first = events.find((event) => event.responseFinished).responseFinished.responseId;
       const firstAudio = events.filter((event) => event.audio?.responseId === first).at(-1)?.audio;
       assert.ok(firstAudio && Buffer.from(firstAudio.payload, "base64").length > 0, "Recovered answer has no playable audio");
-      assert.ok(events.some((event) => event.assistantText?.responseId === first && event.assistantText.text.trim()), "Recovered answer has no text");
+      assert.ok(events.some((event) => event.assistantText?.responseId === first && event.assistantText.text === "Hello from the fixture."), "Recovered answer has incorrect text");
       assert.equal(events.filter((event) => event.responseFinished).length, 1, "Recovery committed extra answers before the next input");
       const firstTurn = events.find((event) => event.transcript?.final)?.transcript.turnId;
       assert.ok(firstTurn, "Recovered answer has no committed user transcript");
@@ -125,7 +133,7 @@ for (const scenario of selected) {
       const continued = events.slice(boundary);
       assert.ok(continued.some((event) => event.transcript?.final && event.transcript.turnId !== firstTurn && event.transcript.text === "Second fixture turn"), "Fresh PCM did not produce a distinct committed second turn");
       const second = continued.find((event) => event.responseFinished?.responseId !== undefined && event.responseFinished.responseId !== first).responseFinished.responseId;
-      assert.ok(continued.some((event) => event.assistantText?.responseId === second && event.assistantText.text.trim()), "Second answer has no text");
+      assert.ok(continued.some((event) => event.assistantText?.responseId === second && event.assistantText.text === "Hello from the fixture."), "Second answer has incorrect text");
       acknowledgedAudio = continued.filter((event) => event.audio?.responseId === second).at(-1)?.audio;
       assert.ok(acknowledgedAudio && Buffer.from(acknowledgedAudio.payload, "base64").length > 0, "Second answer has no playable audio");
     }
