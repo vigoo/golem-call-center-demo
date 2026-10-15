@@ -10,8 +10,9 @@ let crashPending = false;
 function log(message) {
   const entry = document.createElement("li");
   const time = document.createElement("time"); time.textContent = new Date().toLocaleTimeString();
-  entry.append(time, document.createTextNode(message)); $("events").prepend(entry);
-  while ($("events").children.length > 100) $("events").lastChild.remove();
+  entry.append(time, document.createTextNode(message)); $("events").append(entry);
+  while ($("events").children.length > 100) $("events").firstChild.remove();
+  $("events").scrollTop = $("events").scrollHeight;
 }
 function status(value, detail) { $("status").textContent = value; $("detail").textContent = detail; }
 function controls(busy, live = false) {
@@ -70,6 +71,9 @@ async function output(call, event, fast = false) {
     const turn = document.createElement("p"); turn.className = "turn";
     const label = document.createElement("span"); label.textContent = `Assistant · ${value.responseId}`;
     turn.append(label, document.createTextNode(value.text)); $("transcripts").append(turn);
+  }
+  if (kind === "transcript" || kind === "assistantText") {
+    $("transcripts").scrollTop = $("transcripts").scrollHeight;
   }
   if (kind === "audio" && call.capturing) {
     await call.playback.push(value, () => {
