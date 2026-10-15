@@ -1032,3 +1032,26 @@ and confirmed hangup/output closure. Missing-origin, malformed JSON and invalid-
 were rejected. Oracle reviewed this backend step and found no blockers. Frontend wiring is
 the next separate commit. A fresh HTTP-stage crash recheck still failed on rc2-68; GOL-906
 was checked live and remains Backlog, so arbitrary-time clicks must retain that warning.
+
+### Crash-demo console and browser acceptance — 2026-10-15
+
+Added controller-discovered demo controls to the existing Golem-hosted console. The active call
+identity owns the crash request; pending requests disable duplicate clicks, never automatically
+retry, and report command completion separately from recovery. Feedback survives hangup but
+cannot overwrite a replacement call's feedback. The ordinary Golem URL hides these controls.
+The controller now accepts bounded nonblank IDs including periods, preserving the console's
+existing identity contract; JSON.stringify and execFile keep CLI arguments shell-free.
+
+Deployed the frontend to the isolated integration server and passed the real Chrome/controller/
+CLI test: one crash request, a new assistant response identity with expected fixture text,
+matching responseFinished and Played events on the same call, then clean hangup. Validation
+also covers rejected requests, disabled/pending/error states, terminal feedback after hangup,
+stale replies after replacement, and 390px layout. Request gating and error injection exercise
+frontend lifecycle only; they are not counted as runtime recovery. Controlled Web Audio capture
+avoids native microphone permission. Typecheck and all99 unit tests pass. Inspected default,
+pending, completed, error and mobile screenshots in `.amp/in/artifacts/demo-*.png`.
+
+Oracle identified and then approved the disposal/feedback correction; the dotted-ID regression
+was reproduced before correction and is covered by the real crash test. README documents live
+and fixture controller launch modes. GOL-906 remains Backlog and a fresh HTTP-stage crash failed;
+neither arbitrary-time clicks nor live-provider/full-server recovery are acceptance claims.

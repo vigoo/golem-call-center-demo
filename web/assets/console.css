@@ -20,6 +20,11 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 button:focus-visible, input:focus-visible { outline: 2px solid #69dbbd; outline-offset: 3px; }
 #detail { font-size: 13px; margin: 18px 0 0; }
 #error { color: #ffada4; border-left: 3px solid #ffada4; padding-left: 12px; font-size: 14px; }
+#demo-controls { border-top: 1px solid #425168; margin-top: 24px; padding-top: 20px; font-size: 13px; }
+#demo-controls h2 { margin-bottom: 14px; }
+#demo-controls p { line-height: 1.6; }
+#crash { color: #ffce9b; border-color: #946d47; }
+#crash-result { color: #e8edf4; }
 .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 22px 0; }
 .metrics div { padding: 18px 24px; border: 1px solid #2b3543; border-radius: 10px; }
 .metrics span { display: block; color: #9daaba; font-size: 12px; margin-bottom: 10px; }

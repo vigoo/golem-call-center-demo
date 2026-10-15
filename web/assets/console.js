@@ -5,6 +5,8 @@ import { PcmPlayback } from "./playback.js";
 const $ = (id) => document.getElementById(id);
 $("call-id").value = crypto.randomUUID();
 let current = null;
+let displayedCall = null;
+let crashPending = false;
 function log(message) {
   const entry = document.createElement("li");
   const time = document.createElement("time"); time.textContent = new Date().toLocaleTimeString();
@@ -15,6 +17,7 @@ function status(value, detail) { $("status").textContent = value; $("detail").te
 function controls(busy, live = false) {
   $("start").disabled = busy; $("call-id").disabled = busy;
   $("interrupt").disabled = !live; $("hangup").disabled = !live;
+  $("crash").disabled = !live || crashPending;
 }
 function stopCapture(call) {
   call.capturing = false;
@@ -93,7 +96,8 @@ async function output(call, event, fast = false) {
 $("start").addEventListener("click", async () => {
   const id = $("call-id").value.trim();
   if (!id || current) return;
-  const call = { capturing: false, sequence: 0 }; current = call;
+  const call = { id, capturing: false, sequence: 0 }; current = displayedCall = call;
+  $("crash-result").textContent = "Crash control targets this call only. Recovery is experimental.";
   $("transcripts").replaceChildren(); $("partial").textContent = ""; $("empty-transcript").hidden = false;
   $("input-count").textContent = "0 frames"; $("first-audio").textContent = "—"; $("silence").textContent = "—";
   controls(true); $("error").hidden = true; status("Starting", "Requesting microphone permission…");
@@ -156,6 +160,41 @@ $("hangup").addEventListener("click", async () => {
     await Promise.race([call.read, new Promise((_, reject) => setTimeout(() => reject(new Error("Output closure timed out")), 15000))]);
   } catch (error) { await fail(call, error); }
 });
+$("crash").addEventListener("click", async () => {
+  const call = current;
+  if (!call?.capturing || call.failing || crashPending || $("demo-controls").hidden) return;
+  crashPending = true; $("crash").disabled = true;
+  $("crash-result").textContent = "Requesting agent crash… Keep this page open.";
+  log(`Crash requested · ${call.id}`);
+  try {
+    // Never retry an uncertain destructive request automatically.
+    const response = await fetch("/__demo/crash", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ callId: call.id }), signal: AbortSignal.timeout(35000),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error ?? `Controller returned ${response.status}`);
+    if (displayedCall === call) {
+      $("crash-result").textContent = `Crash command completed for ${call.id}. Continue the conversation to check recovery; success is not yet confirmed.`;
+      log(`Crash command completed · ${call.id} · recovery not yet confirmed`);
+    }
+  } catch (error) {
+    if (displayedCall === call) {
+      $("crash-result").textContent = `Could not confirm crash for ${call.id}: ${error.message}. Check controller logs before retrying.`;
+      log(`Crash control: ${error.message}`);
+    }
+  } finally {
+    crashPending = false;
+    $("crash").disabled = !current?.capturing || Boolean(current?.failing);
+  }
+});
+fetch("/__demo", { signal: AbortSignal.timeout(2000) }).then(async (response) => {
+  if (!response.ok) return;
+  const { environment } = await response.json();
+  if (!["local", "integration"].includes(environment)) return;
+  $("demo-environment").textContent = environment === "local" ? "· live providers" : "· protocol fixtures";
+  $("demo-controls").hidden = false;
+}).catch(() => { /* Ordinary Golem deployments have no local crash controller. */ });
 window.addEventListener("pagehide", () => {
   if (!current) return;
   const call = current;

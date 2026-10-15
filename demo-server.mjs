@@ -29,8 +29,8 @@ const server = createServer(async (request, response) => {
         if (body.length > 1024) return reply(413, { error: "Request too large" });
       }
       const { callId } = JSON.parse(body);
-      if (typeof callId !== "string" || !/^[a-zA-Z0-9_-]{1,120}$/.test(callId)) {
-        return reply(400, { error: "Call ID must contain 1–120 letters, digits, hyphens or underscores" });
+      if (typeof callId !== "string" || callId.length > 120 || !callId.trim()) {
+        return reply(400, { error: "Call ID must contain 1–120 characters and not be blank" });
       }
       if (crashing) return reply(409, { error: "A crash request is already running" });
       crashing = true;

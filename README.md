@@ -127,6 +127,39 @@ and [library restrictions](https://elevenlabs.io/docs/eleven-creative/voices/voi
 Empty synthesis reports a recoverable error instead of committing an unspoken assistant answer;
 premature synthesis termination cancels generation. Use a fresh call ID after redeploying.
 
+## Local recovery demo button
+
+After deploying the live environment above, start the loopback-only controller:
+
+```nu
+node demo-server.mjs
+```
+
+Open [the recovery demo](http://localhost:19008), not the direct Golem URL. It proxies the
+Golem-hosted console and Durable Streams and adds a same-origin crash endpoint. The ordinary
+Golem console hides the demo controls. No management credentials are sent to the browser.
+The controller requires the local `golem` executable and uses `GOLEM_EFFECT_GOLEM_PATH`, falling
+back to `~/projects/golem/golem/sdks/effect`. It binds only loopback; do not expose it publicly.
+
+Start a call and click **Crash agent** while keeping the page open. This invokes
+`golem agent simulate-crash` for that call only; it does not kill the server. The button disables
+while a request is pending and never automatically retries. Command completion is not proof
+of recovery: continue speaking and check for another audible answer on the same call.
+Speech may repeat. Recognition and synthesis crash scenarios pass fixture tests, but arbitrary
+click timing can still hit GOL-906 during an OpenAI request. Start a fresh call if recovery fails.
+Real-provider crash compatibility and whole-server restart are not verified.
+
+For deterministic rehearsal, with the integration deployment and fixture running, use instead:
+
+```nu
+with-env { GOLEM_DEMO_ENV: "integration" } { node demo-server.mjs }
+node test/browser-demo.mjs
+```
+
+Stop the existing controller before switching environments; both modes use port19008. The browser
+test requires integration mode, exercises a real CLI crash and verifies a new completed/played
+response, plus request rejection, pending/error feedback, hangup races and mobile layout.
+
 ## Protocol and limits
 
 `CallAgent(callId).run` exposes `input` and `output` Durable Stream slots under

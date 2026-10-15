@@ -21,6 +21,13 @@
         <button id="hangup" class="secondary" disabled>Hang up</button></div>
       <p id="detail" class="muted">Console shell is ready. Microphone transport is not connected yet.</p>
       <p id="error" role="alert" hidden></p>
+      <div id="demo-controls" hidden>
+        <h2>Recovery demo <span id="demo-environment" class="muted"></span></h2>
+        <button id="crash" class="secondary" disabled>Crash agent</button>
+        <p class="muted">Crashes only this call's agent, not the server. Keep the page open and continue speaking.<br>
+          Experimental: a crash during an OpenAI request can still fail (GOL-906). Speech may repeat.</p>
+        <p id="crash-result" role="status">Start a call to enable crash control.</p>
+      </div>
     </section>
     <div class="metrics" aria-label="Call measurements">
       <div><span>Input audio</span><strong id="input-count">0 frames</strong></div>
