@@ -971,3 +971,47 @@ agent reset, push or cloud deployment was performed.
 Oracle approved this documentation/walkthrough checkpoint with no blockers, explicitly not
 crash acceptance. Additional fresh-server evidence and the memory-pressure distinction were
 commented on the existing GOL-862 (still Todo), rather than opening a duplicate issue.
+
+### Updated runtime verification — 2026-10-15
+
+Verified CLI `v1.6.0-rc2-68-g3b7efa521e`, with the matching rebuilt local Effect SDK symlinked
+from `~/projects/golem/golem/sdks/effect`. Forced a fresh application build using
+`GOLEM_EFFECT_GOLEM_PATH` and the previously verified compatible wasm-rquickjs injector.
+Stopped only this thread's old server process and started the updated binary with a new data
+directory `.amp/in/local-golem/data-rc2-68`, ports19881/19006/19007 and explicit8GiB admission
+budget. Old data was preserved. Only the integration/mock environment was deployed.
+
+A predeclared batch of three fresh agents per scenario now passes `continue-call`, `replay-stt`,
+`crash-stt` and `crash-elevenlabs` (12 passes). Recognition and synthesis recovery each complete
+two distinct committed turns with matching text/audio/completion, mandatory playback ACK and
+explicit hangup/output closure. Post-crash interrupt controls are responsive again. GOL-862 is
+Done, and its old stall was not reproduced in these bounded tests. Seven additional slow-reader,
+provider-failure and interruption controls pass; typecheck and all99 unit tests pass unchanged.
+
+All three `crash-openai` attempts fail, and the aggregate runner correctly exits nonzero.
+This is not GOL-862: the agent reaches terminal Failed with `guest call settlement task failed:
+Non-idempotent remote write operation was not completed, cannot retry`. Only the first transcript
+is returned and the fixture observes one HTTP request, not a replacement. Representative server
+replay-buffer history has batched scope147, HTTP send149 under147 and foreign WebSocket receive150
+(WriteRemote, no parent). The unfinished HTTP scope's `no_concurrent_side_effect` scan rejects
+that foreign write despite default assume_idempotence=true. Oracle reviewed the source/evidence
+and confirmed no justified application fix: setting idempotence=true again cannot bypass that
+guard, and serializing away recognition or globally weakening side-effect safety is not acceptable.
+
+After checking all166 release-project issue titles, related completed HTTP/replay reports and
+unarchived Golem threads, filed general reports in Golem1.6 finalization:
+- [GOL-906](https://linear.app/golem-cloud/issue/GOL-906): P3 POST recovery with concurrent
+  WebSocket receive; runtime defect versus intended restriction remains a maintainer decision.
+- [GOL-907](https://linear.app/golem-cloud/issue/GOL-907): CLI oplog JSON decoding fails with
+  missing `onRight`, truncating export after entry150. Server logs supplied the missing evidence.
+
+GOL-906 has a fixture-only full-handler source/evidence archive with Nushell instructions,
+112887 bytes, SHA256 `4997d2b24b8c399837718be0cfaf8dc01fc0da5e96ffd388d987eebd7213c36f`.
+GOL-862 was commented with its passing verification and the separate remaining failure.
+Aggregate logs are `.amp/in/rc2-68-recovery.log`, `.amp/in/rc2-68-controls.log` and
+`.amp/in/local-golem/rc2-68-server.log`; per-agent evidence remains under recovery-runs.
+
+No production code or acceptance assertion was changed. Full-server restart, repeated crashes
+on one call, deployed partial-ACK/overflow races and real-provider crash compatibility remain
+unverified. Browser rendering was not changed or rerun in this verification step; existing
+walkthrough GOL-862 labels predate these results. The README is the current acceptance summary.

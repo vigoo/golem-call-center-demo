@@ -5,9 +5,11 @@ streaming TTS. A static-only ephemeral Golem HTTP router hosts the same-origin b
 See [`DEVELOPMENT_PLAN.md`](./DEVELOPMENT_PLAN.md) for the design and commit-by-commit history.
 
 **Status:** provider-aware reconstruction is implemented and unit-tested; the fixture pipeline
-and browser work locally. Strict active-call crash acceptance remains pending because broader
-replay intermittently stalls before reconstruction ([GOL-862](https://linear.app/golem-cloud/issue/GOL-862)).
-GOL-799's original reduced echo recovery now passes.
+and browser work locally. On CLI `v1.6.0-rc2-68-g3b7efa521e` with the rebuilt local SDK,
+post-crash controls, recognition recovery and synthesis recovery each pass three fixed attempts.
+[GOL-862](https://linear.app/golem-cloud/issue/GOL-862) is Done and its old stall was not reproduced.
+Whole-call crash acceptance remains pending: an unfinished HTTP POST interleaved with a
+WebSocket receive fails recovery ([GOL-906](https://linear.app/golem-cloud/issue/GOL-906)).
 Live recognition, LLM responses and audio playback were user-tested. Long-response buffering is
 also tested against protocol fixtures using real Chrome playback and Golem streams. Acoustic
 latency remains unmeasured. This is an unauthenticated development prototype, not a production
@@ -29,6 +31,8 @@ attempt, reusing complete text or regenerating incomplete text. The walkthrough 
 implemented application logic from pending crash/live-provider acceptance. These localhost URLs
 require the browser and Golem to run on the same machine. The earlier Amp portal is a static
 copy of the older walkthrough, not an automatically updated deployment.
+Its GOL-862 acceptance labels, and those in the deployed walkthrough, predate the latest runtime
+verification; use this README and the plan's 2026-10-15 checkpoint for current acceptance status.
 The walkthrough is a static interactive explanation with representative protocol excerpts—not
 live telemetry. It requires no microphone or provider credentials. Run `node test/browser-walkthrough.mjs`
 against the integration deployment to check navigation, examples, CSP, mobile layout and no call requests.
@@ -172,7 +176,7 @@ node test/recovery-smoke.mjs
 
 Delayed reading (1.5 seconds), provider failures and explicit interruption during STT/OpenAI/TTS
 are tested separately from simulated crashes. The script asserts failures rather than hiding them.
-The fixed crash batch (three fresh agents per stage) produced one STT continuation under earlier,
+The older CLI's fixed crash batch (three fresh agents per stage) produced one STT continuation under earlier,
 weaker checks and eight stalls. That continuation is not a strict-check acceptance pass. The
 runner now requires fresh-session evidence, matching text/audio/completion, a mandatory ACK,
 a distinct second committed turn and explicit hangup closure. It exits nonzero on any failure,
@@ -181,7 +185,16 @@ Select a scenario with `with-env { GOLEM_TEST_SCENARIO: "interrupt-openai" } { n
 Use a fixed `GOLEM_TEST_ATTEMPTS` from 1–3, never retry until green. Comma-separated scenario names
 are accepted. `continue-call` is the non-crash control for two distinct answers, ACKs and closure.
 
-On CLI `v1.6.0-rc2-25-gfd734d5670` with the rebuilt local SDK, 99 unit tests, typecheck,
+Latest verification on `v1.6.0-rc2-68-g3b7efa521e`: typecheck and 99 unit tests pass. The
+fixed batch passes `continue-call`, `replay-stt`, `crash-stt` and `crash-elevenlabs` three times
+each, with strict two-turn/ACK/closure assertions for the continuing calls. All seven slow-reader,
+provider-failure and interruption controls pass. All three `crash-openai` attempts fail with
+`Non-idempotent remote write operation was not completed, cannot retry`, reaching terminal Failed
+rather than the old stall. GOL-906 tracks the P3 HTTP batched-scope rejection of a concurrent
+WebSocket receive. No application idempotence override or manual retry was added. CLI oplog
+inspection also fails with a separate `missing field onRight` decoder error (GOL-907).
+
+Previously, on CLI `v1.6.0-rc2-25-gfd734d5670` with the rebuilt local SDK, 99 unit tests, typecheck,
 normal deployment smoke, provider-failure/interruption and strict non-crash continuation pass.
 All six browser buffering scenarios also pass on a fresh isolated server using controlled
 Web Audio capture; automated native microphone permission remains unverified. An earlier
