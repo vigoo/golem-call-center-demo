@@ -160,14 +160,15 @@ Stop the existing controller before switching environments; both modes use port1
 test requires integration mode, exercises a real CLI crash and verifies a new completed/played
 response, plus request rejection, pending/error feedback, hangup races and mobile layout.
 
-## Buffered inference recovery experiment
+## Streaming inference recovery experiment
 
 The default path still streams OpenAI text in the call agent and can hit GOL-906. An opt-in
-`bufferedInference` mode isolates HTTP in a separate durable `InferenceAgent(callId)`, returning
-the entire completed text through durable RPC. Recognition and synthesis WebSockets remain in
-the call agent. This is a latency trade-off, **not** an implementation of streaming RPC: speech
-starts only after inference completes. The helper rejects incomplete output and buffers at most
-65536 UTF-16 code units. Its model/API endpoint config is independent of the caller's config.
+`isolatedInference` mode isolates HTTP in a separate durable `InferenceAgent(callId)`, returning
+text deltas and explicit completion/failure items through streaming durable RPC. Recognition and
+synthesis WebSockets remain in the call agent. Speech starts before inference completes, as in
+the original direct path. The helper's model/API endpoint config is independent of the caller's
+config. This replaces the earlier buffered experiment; use fresh call IDs, not existing agents
+whose histories contain the scalar RPC method. The saved call-state schema is unchanged.
 
 The separate fixture-only deployment leaves the existing live demo unchanged. With the same
 isolated server and protocol fixture running:
@@ -185,18 +186,21 @@ with-env {
 
 `crash-openai` crashes the caller before HTTP headers; `crash-inference` crashes only the helper;
 `crash-both` crashes caller then helper sequentially. The three body scenarios do the same after
-the fixture emits a partial SSE response. All 18 inference crash attempts passed on rc2-68, as
-did 6 recognition/synthesis crash attempts, 3 continuation controls, 7 failure/interruption/slow-reader
-controls and 6 real-browser buffering scenarios. Checks require two distinct turns, expected text,
-nonempty audio with matching response IDs/completion, ACK submission and hangup/output closure.
-The unchanged direct-HTTP baseline still fails. See the plan for exact evidence and limitations.
+the first delta has reached synthesis and browser-facing audio while the provider is still held.
+One fresh preflight per crash scenario and a two-turn control passed on rc2-68. Checks require
+two distinct turns, expected text, nonempty audio with matching response IDs/completion, ACK
+submission and hangup/output closure. Broader streaming acceptance is still being tested.
+The earlier 18-attempt matrix belongs to the buffered implementation, not this streaming
+implementation. See the plan for separate evidence and limitations.
 
 Open [the experimental console](http://call-center-recovery.localhost:19006) for fixture rehearsal.
 The local crash-button controller remains configured for the original live demo, not this domain.
 Remote inference may survive an interrupt/hangup, incur cost, and delay later requests queued on
-the same helper. Two-turn tests observed 3 HTTP requests after a caller or helper crash, 4 after
-both, versus 2 normally; exactly-once inference/billing is **not** promised. Real-provider crashes,
-full-server restart and repeated crashes within one ongoing call remain unverified.
+the same helper; cancellation is cooperative. Exactly-once inference/billing is **not** promised.
+Recovery of already published deltas requires a compatible event prefix: changing text or chunk
+segmentation on HTTP retry may conflict with durable stream history. Do not splice a regenerated
+suffix onto exposed speech. Real-provider crashes, full-server restart and repeated crashes within
+one ongoing call remain unverified.
 
 ## Protocol and limits
 

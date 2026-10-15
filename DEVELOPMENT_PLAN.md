@@ -1125,3 +1125,26 @@ restored ended-state rejection and output closure; deploy the new code with buff
 false to integration and complete a fresh direct-streaming two-turn call. Hardened the runner
 to require exactly two completions after final drain (also checked by the evidence audit).
 The live-provider controller remains on its original local deployment at localhost:19008.
+
+### Streaming inference isolation — implementation checkpoint, 2026-10-15
+
+The original implementation forwarded inference deltas to synthesis immediately. At the user's
+request, replaced the experimental scalar/buffered RPC with `WitTypes.AgentStream` carrying
+TextDelta, Completed and sanitized Failed items. The shared response-event schema owns the
+successful cases; the wire union flattens its members because the SDK rejects nested unions.
+Each remote stream owns its RPC scope, and provider errors do not become successful EOF.
+Renamed the opt-in config/preset to isolatedInference/isolated; defaults remain direct streaming.
+This changes the experimental RPC/config contract: fresh identities only, no old-agent updates.
+
+Deployed only inference-recovery revision2 on the isolated rc2-68 server. All99 unit tests and
+typecheck pass. Seven fresh preflights passed: continuation plus caller/helper/both crashes before
+headers and after an exposed prefix. Body tests require audio and a synthesis text write before
+releasing provider completion, then two distinct turns, matching text/audio/completion, ACKs and
+hangup/output closure. Evidence: `.amp/in/streaming-inference-preflight.log`, per-call recovery-runs
+including streamed-prefix.json. These results are separate from the buffered acceptance above.
+
+Oracle reviewed the implementation and scope with no blocker to fixture experiments. It identified
+two acceptance checks for the next step: changed prefix/chunk segmentation on retry (durable stream
+deduplication compares payloads, not just sequence numbers), and helper availability after interrupt
+or hangup while the obsolete provider request stays held. No general nondeterministic inference
+recovery claim is made. Existing live demo remains unchanged; no runtime/SDK changes or pushes.

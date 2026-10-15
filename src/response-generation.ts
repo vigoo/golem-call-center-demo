@@ -1,12 +1,14 @@
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai";
-import { Context, Effect, Layer, type Redacted, Stream } from "effect";
+import { Context, Effect, Layer, type Redacted, Schema, Stream } from "effect";
 import { AiError, LanguageModel, Prompt, type Response } from "effect/ai";
 import { FetchHttpClient } from "effect/http";
 import type { ConversationTurn } from "./call-protocol.js";
 
-export type ResponseGenerationEvent =
-  | { readonly _tag: "TextDelta"; readonly text: string }
-  | { readonly _tag: "Completed" };
+export const ResponseGenerationEvent = Schema.Union([
+  Schema.TaggedStruct("TextDelta", { text: Schema.String }),
+  Schema.TaggedStruct("Completed", {}),
+]);
+export type ResponseGenerationEvent = typeof ResponseGenerationEvent.Type;
 
 export const buildConversationPrompt = (
   systemPrompt: string,
@@ -95,28 +97,6 @@ export interface OpenAiLanguageModelOptions {
   readonly apiUrl: string;
   readonly model: string;
 }
-
-// Buffer only a complete response. A crash cannot expose a prefix to the caller.
-export const collectResponseText = (
-  systemPrompt: string,
-  turns: ReadonlyArray<ConversationTurn>,
-) => Effect.gen(function* () {
-  const generator = yield* ResponseGenerator;
-  let text = "";
-  let completed = false;
-  const invalid = (description: string) => AiError.make({
-    module: "InferenceAgent", method: "generate",
-    reason: new AiError.UnknownError({ description }),
-  });
-  yield* generator.stream(systemPrompt, turns).pipe(Stream.runForEach((event) => {
-    if (event._tag === "Completed") { completed = true; return Effect.void; }
-    text += event.text;
-    return text.length > 65536
-      ? Effect.fail(invalid("Buffered inference exceeded 65536 characters")) : Effect.void;
-  }));
-  if (!completed) return yield* Effect.fail(invalid("Inference ended without completion"));
-  return text;
-});
 
 export const openAiLanguageModelLayer = ({
   apiKey,

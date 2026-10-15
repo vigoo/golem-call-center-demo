@@ -8,7 +8,7 @@ import { DeepgramFlux } from "./deepgram-flux.js";
 import { DeepgramTransportLive } from "./deepgram-flux-live.js";
 import { ElevenLabsTts } from "./elevenlabs-tts.js";
 import { ElevenLabsTransportLive } from "./elevenlabs-tts-live.js";
-import { makeBufferedInferenceLayer } from "./inference-agent.js";
+import { makeIsolatedInferenceLayer } from "./inference-agent.js";
 import { openAiLanguageModelLayer, ResponseGenerator } from "./response-generation.js";
 
 interface CallAgentState {
@@ -73,7 +73,7 @@ export const CallAgent = defineAgent({
       const providers = Layer.mergeAll(
         DeepgramFlux.layer.pipe(Layer.provide(DeepgramTransportLive)),
         ElevenLabsTts.layer.pipe(Layer.provide(ElevenLabsTransportLive)),
-        (yield* config.bufferedInference) ? yield* makeBufferedInferenceLayer(callId) : ResponseGenerator.layer.pipe(Layer.provide(openAiLanguageModelLayer({
+        (yield* config.isolatedInference) ? yield* makeIsolatedInferenceLayer(callId) : ResponseGenerator.layer.pipe(Layer.provide(openAiLanguageModelLayer({
           apiKey: yield* config.openAi.apiKey.get,
           apiUrl: yield* config.openAi.apiUrl,
           model: yield* config.openAi.model,

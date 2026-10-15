@@ -27,7 +27,7 @@ const inferenceScenarios = ["crash-inference", "crash-both", "crash-body", "cras
 const scenarios = ["continue-call", "slow-reader", "failure-stt", "failure-openai", "failure-elevenlabs", "interrupt-stt", "interrupt-openai", "interrupt-elevenlabs", "replay-stt", "crash-stt", "crash-openai", "crash-elevenlabs", ...inferenceScenarios];
 const selected = process.env.GOLEM_TEST_SCENARIO?.split(",") ?? scenarios.filter((s) => !inferenceScenarios.includes(s));
 assert.ok(selected.every((scenario) => scenarios.includes(scenario)), "Unknown recovery scenario");
-assert.ok(environment === "inference-recovery" || !selected.some((s) => inferenceScenarios.includes(s)), "Inference-agent crash scenarios require the buffered inference-recovery deployment");
+assert.ok(environment === "inference-recovery" || !selected.some((s) => inferenceScenarios.includes(s)), "Inference-agent crash scenarios require the isolated inference-recovery deployment");
 for (const scenario of selected) {
   for (let attempt = 1; attempt <= attempts; attempt++) {
   const [kind, targetStage] = scenario.split("-");
@@ -65,9 +65,16 @@ for (const scenario of selected) {
     }
     if (kind === "crash" || kind === "replay") {
       if (bodyCrash) {
-        await pause(500);
-        await poll();
-        assert.ok(!events.some((event) => event.audio || event.assistantText || event.responseFinished), "Buffered inference exposed an incomplete prefix");
+        const prefixDeadline = Date.now() + 10000;
+        while (!events.some((event) => event.audio)) {
+          assert.ok(!closed && Date.now() < prefixDeadline, "Streaming inference did not reach playback before provider completion");
+          await poll(); await pause(50);
+        }
+        const prefix = await fixtureRequest();
+        assert.ok(prefix.pending["openai-body"] > 0, "Provider was not held after its first delta");
+        assert.ok(prefix.journal.some((entry) => entry.operation === "text" && entry.text === "Hello "), "First inference delta did not reach speech synthesis");
+        assert.ok(!events.some((event) => event.assistantText || event.responseFinished), "Incomplete inference was committed");
+        await writeFile(`${evidence}/streamed-prefix.json`, JSON.stringify({ events, provider: prefix }, null, 2));
       }
       const targets = targetStage === "both" || targetStage === "bothbody" ? ["CallAgent", "InferenceAgent"]
         : targetStage === "inference" || targetStage === "helperbody" ? ["InferenceAgent"] : ["CallAgent"];

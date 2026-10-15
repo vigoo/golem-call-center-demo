@@ -39,7 +39,7 @@ environments:
         allowDirty: true
   inference-recovery:
     server: local
-    componentPresets: [mock, buffered]
+    componentPresets: [mock, isolated]
     version:
       git:
         allowDirty: true
@@ -59,7 +59,7 @@ agents:
       permissions: read-only
   CallAgent:
     config:
-      bufferedInference: false
+      isolatedInference: false
       deepgram:
         apiUrl: wss://api.deepgram.com/v2/listen
         model: flux-general-en
@@ -82,9 +82,9 @@ agents:
     presets:
       live:
         default: true
-      buffered:
+      isolated:
         config:
-          bufferedInference: true
+          isolatedInference: true
       mock:
         config:
           deepgram:
