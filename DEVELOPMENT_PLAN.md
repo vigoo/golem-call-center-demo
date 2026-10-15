@@ -1220,3 +1220,36 @@ Oracle reviewed the completed step and inspected the logs/journals, approved it 
 within this fixture-experiment scope, and requested the combined-crash wording clarification.
 Applied that clarification and its optional final-drain stale-output check. The bounded independent
 bug-finding pass found no application bugs. No server reset, live/cloud deployment or push.
+
+### Next changeset — prefix-safe recovery design consultation, 2026-10-15
+
+The streaming implementation is committed and the worktree was clean before this consultation.
+Oracle confirmed that preserving published RPC items while rolling back their incomplete HTTP
+input scope is the conflicting boundary. Do not remove EventConflict checks, discard published
+stream history, skip regenerated chunks, or return to complete-response buffering.
+
+Two materially different implementation directions remain:
+
+1. Provider-specific OpenAI recovery: create a stored background response with stream=true, acquire
+   its provider response ID before publishing text, then retrieve incremental SSE windows using
+   stream=true and starting_after=<provider sequence_number>. Settle each HTTP window before
+   publishing its normalized events. No new create after published output. This adds storage/
+   retention requirements and potentially a network round trip per delta in the first prototype;
+   model/account support and latency must be verified. It is not generic HTTP recovery.
+2. Runtime recovery: preserve/replay the delivered HTTP prefix and expose loss of its continuation
+   as an ordinary guest-visible HTTP error unless a provider-specific continuation is validated.
+   The application could then resume by cursor or abandon the response explicitly. This is a
+   broader executor recovery-policy change, not a one-line adjustment to request reissue; parent/
+   child recovery and error delivery must remain consistent. Fatal remote-stream error containment
+   is a separate boundary and must not be disguised as an Effect catch.
+
+Oracle's correctness-first provider design has a prerequisite: prove that awaited cancellation of
+an HTTP body durably settles its consume-body scope before publication. The generated native SDK
+template inspection did not establish that barrier. This is an unverified concern, not a confirmed
+bridge bug. Investigate/test the authoritative wasm-rquickjs source and matching SDK build before
+depending on it; do not hand-edit generated templates. Custom Durability.wrap around a live Effect
+stream is also not a verified fiber-safe substitute.
+
+Choose the provider/storage/latency trade-off versus runtime-policy scope with the user before
+implementation. Keep the deterministic crash matrix and explicit failing divergence probes as
+baseline evidence. No implementation change or feature ticket was made during this consultation.
