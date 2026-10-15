@@ -23,14 +23,16 @@ const failures = [];
 const attempts = Number(process.env.GOLEM_TEST_ATTEMPTS ?? 1);
 assert.ok(Number.isInteger(attempts) && attempts >= 1 && attempts <= 3, "Use one to three fixed fresh-agent attempts, never retry until green");
 
-const scenarios = ["continue-call", "slow-reader", "failure-stt", "failure-openai", "failure-elevenlabs", "interrupt-stt", "interrupt-openai", "interrupt-elevenlabs", "replay-stt", "crash-stt", "crash-openai", "crash-elevenlabs", "crash-inference", "crash-both"];
-const selected = process.env.GOLEM_TEST_SCENARIO?.split(",") ?? scenarios.filter((s) => s !== "crash-inference" && s !== "crash-both");
+const inferenceScenarios = ["crash-inference", "crash-both", "crash-body", "crash-helperbody", "crash-bothbody"];
+const scenarios = ["continue-call", "slow-reader", "failure-stt", "failure-openai", "failure-elevenlabs", "interrupt-stt", "interrupt-openai", "interrupt-elevenlabs", "replay-stt", "crash-stt", "crash-openai", "crash-elevenlabs", ...inferenceScenarios];
+const selected = process.env.GOLEM_TEST_SCENARIO?.split(",") ?? scenarios.filter((s) => !inferenceScenarios.includes(s));
 assert.ok(selected.every((scenario) => scenarios.includes(scenario)), "Unknown recovery scenario");
-assert.ok(environment === "inference-recovery" || !selected.some((s) => s === "crash-inference" || s === "crash-both"), "Inference-agent crash scenarios require the buffered inference-recovery deployment");
+assert.ok(environment === "inference-recovery" || !selected.some((s) => inferenceScenarios.includes(s)), "Inference-agent crash scenarios require the buffered inference-recovery deployment");
 for (const scenario of selected) {
   for (let attempt = 1; attempt <= attempts; attempt++) {
   const [kind, targetStage] = scenario.split("-");
-  const stage = targetStage === "inference" || targetStage === "both" ? "openai" : targetStage;
+  const bodyCrash = ["body", "helperbody", "bothbody"].includes(targetStage);
+  const stage = bodyCrash ? "openai-body" : targetStage === "inference" || targetStage === "both" ? "openai" : targetStage;
   const callId = `${scenario}-${randomUUID()}`;
   const evidence = `.amp/in/recovery-runs/${callId}`;
   await mkdir(evidence, { recursive: true });
@@ -62,8 +64,13 @@ for (const scenario of selected) {
       while ((await fixtureRequest()).pending[stage] === 0) { assert.ok(Date.now() < deadline, `${stage} not held`); await pause(50); }
     }
     if (kind === "crash" || kind === "replay") {
-      const targets = targetStage === "both" ? ["CallAgent", "InferenceAgent"]
-        : targetStage === "inference" ? ["InferenceAgent"] : ["CallAgent"];
+      if (bodyCrash) {
+        await pause(500);
+        await poll();
+        assert.ok(!events.some((event) => event.audio || event.assistantText || event.responseFinished), "Buffered inference exposed an incomplete prefix");
+      }
+      const targets = targetStage === "both" || targetStage === "bothbody" ? ["CallAgent", "InferenceAgent"]
+        : targetStage === "inference" || targetStage === "helperbody" ? ["InferenceAgent"] : ["CallAgent"];
       for (const target of targets) {
         const { stdout, stderr } = await run("golem", ["agent", "simulate-crash", `${target}(${JSON.stringify(callId)})`, "-E", environment, "-Y"], {
           env: { ...process.env, GOLEM_EFFECT_GOLEM_PATH: `${process.env.HOME}/projects/golem/golem/sdks/effect` }, timeout: 30000,
@@ -146,6 +153,7 @@ for (const scenario of selected) {
     }
     if (kind === "slow" || kind === "interrupt" || kind === "crash" || kind === "continue") assert.ok(!events.some((e) => e.failure), "Successful scenario emitted a failure during final drain");
     if (kind === "interrupt") assert.ok(!events.some((e) => e.audio || e.assistantText || e.responseFinished), "Interrupted scenario emitted response output during final drain");
+    if (kind === "crash" || kind === "continue") assert.equal(events.filter((e) => e.responseFinished).length, 2, "Continuation committed extra answers during final drain");
     console.log(`${scenario}: closed; events=${events.map((e) => typeof e === "string" ? e : Object.keys(e)[0]).join(",")}`);
     outcome = "passed";
   } catch (error) {

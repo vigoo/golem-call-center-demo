@@ -24,7 +24,7 @@ const server = createServer(async (request, response) => {
         scenario.held.clear(); scenario = newScenario(settings);
       }
     }
-    const pending = { stt: 0, openai: 0, elevenlabs: 0 };
+    const pending = { stt: 0, openai: 0, "openai-body": 0, elevenlabs: 0 };
     for (const item of scenario.held.values()) pending[item.stage]++;
     response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ...scenario.counts, connections: scenario.connections, journal: scenario.journal, pending })); return;
   }
@@ -46,9 +46,20 @@ const server = createServer(async (request, response) => {
   if (state.settings.failStage === "openai") { response.writeHead(400).end("Fixture failure"); return; }
   response.writeHead(200, { "content-type": "text/event-stream" });
   const send = (event) => response.write(`data: ${JSON.stringify(event)}\n\n`);
+  const splitBody = state.settings.holdStage === "openai-body";
   send({ type: "response.output_text.delta", item_id: "message-1", output_index: 0,
-    content_index: 0, sequence_number: 0, logprobs: [], delta: "Hello from the fixture." });
-  send({ type: "response.completed", sequence_number: 1, response: {
+    content_index: 0, sequence_number: 0, logprobs: [], delta: splitBody ? "Hello " : "Hello from the fixture." });
+  if (splitBody) {
+    state.journal.push({ stage: "openai-body", operation: "prefix", attempt: state.counts.openai });
+    await new Promise((resolve) => {
+      response.once("close", resolve);
+      deliver(state, "openai-body", response, resolve);
+    });
+    if (response.destroyed) return;
+    send({ type: "response.output_text.delta", item_id: "message-1", output_index: 0,
+      content_index: 0, sequence_number: 1, logprobs: [], delta: "from the fixture." });
+  }
+  send({ type: "response.completed", sequence_number: splitBody ? 2 : 1, response: {
     id: "fixture-response", status: "completed", model: "fixture",
     object: "response", created_at: 0, metadata: null, temperature: null, top_p: null,
     tools: [], tool_choice: "none", error: null, output: [], instructions: null,

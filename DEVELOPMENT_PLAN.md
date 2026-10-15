@@ -1083,3 +1083,45 @@ two-turn/ACK/hangup/output-closure control passed. Oracle reviewed implementatio
 blockers for the experiment, requested environment/origin validation and collector boundary
 tests, and checked scope and snapshot ownership. Applied those changes. Crash acceptance is
 the next checkpoint, including caller/helper/both pre-header crashes and response-body coverage.
+
+### Buffered inference isolation — fixture recovery acceptance, 2026-10-15
+
+The predeclared matrix passed three fresh attempts per scenario: caller-only, helper-only and
+sequential caller-then-helper crashes before response headers, and the same three cases after
+a partial SSE body. All 18 pass two distinct committed turns with expected text, nonempty
+response-tagged audio, matching completion, mandatory ACK submission and hangup/output closure.
+The body scenarios first assert no text/audio/completion escapes the caller while incomplete.
+Six additional STT/TTS crash attempts, three continuation controls, seven failure/interruption/
+slow-reader controls, and all six real Chrome buffering scenarios also pass. There is one extra
+earlier implementation preflight control, not counted in the declared matrix. Typecheck and
+100 unit tests pass, including collector completion/error and 65536/65537 boundary behavior.
+
+Representative read-only oplog verification confirms the helper consumed the prefix: End63 for
+consume-body-chunk62 contains `Hello `, followed by Jump66 cutting61–65. Its 168-entry history
+has no WebSocket Starts. The separately sampled 422-entry caller history has zero HTTP Starts,
+31 WebSocket Starts,12 RPC Starts and no jumps/errors. This corroborates isolation; it is not
+a claim that HTTP no longer rolls back. The helper's rollback cannot discard caller history.
+Fixture-side prefix emission plus a bounded delay is the harness trigger; guest consumption
+was additionally established from the representative oplog, not automatically for every run.
+
+Two-turn scenarios observe three HTTP requests after either caller-only or helper-only crashes,
+four after both, versus two without crashes. Inference repetition/billing is intentionally accepted.
+Interrupt controls demonstrate caller-visible suppression after provider release, not cancellation
+of remote inference. Full-server restart, real providers, repeated crashes within one continuing
+call, and nondeterministic replacement-body compatibility remain unverified. The existing local
+live demo and default streaming deployments are unchanged.
+
+Evidence: `.amp/in/inference-crash-batch.log`, `inference-body-batch.log`,
+`inference-other-crashes.log`, `inference-controls.log`, `inference-browser-buffering.log`,
+per-call recovery-runs, and `.amp/in/artifacts/inference-recovery-results.json` plus
+`inference-oplog-ownership.json`. Raw fixture oplogs are under `.amp/in/inference-*-oplog-complete.json`;
+they may contain mock credentials and should not be published unreviewed. Oracle audited all
+35 retained experiment outcomes and raw ownership evidence, approved this validation step with
+no blockers, and kept the acceptance limits explicit. A separate bounded bug-finding pass found
+no bugs. No runtime/SDK changes, server resets, cloud deployment or push were performed.
+
+Final controls also passed: crash an ended experimental call, then invoke it again to verify
+restored ended-state rejection and output closure; deploy the new code with bufferedInference
+false to integration and complete a fresh direct-streaming two-turn call. Hardened the runner
+to require exactly two completions after final drain (also checked by the evidence audit).
+The live-provider controller remains on its original local deployment at localhost:19008.

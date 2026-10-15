@@ -160,6 +160,44 @@ Stop the existing controller before switching environments; both modes use port1
 test requires integration mode, exercises a real CLI crash and verifies a new completed/played
 response, plus request rejection, pending/error feedback, hangup races and mobile layout.
 
+## Buffered inference recovery experiment
+
+The default path still streams OpenAI text in the call agent and can hit GOL-906. An opt-in
+`bufferedInference` mode isolates HTTP in a separate durable `InferenceAgent(callId)`, returning
+the entire completed text through durable RPC. Recognition and synthesis WebSockets remain in
+the call agent. This is a latency trade-off, **not** an implementation of streaming RPC: speech
+starts only after inference completes. The helper rejects incomplete output and buffers at most
+65536 UTF-16 code units. Its model/API endpoint config is independent of the caller's config.
+
+The separate fixture-only deployment leaves the existing live demo unchanged. With the same
+isolated server and protocol fixture running:
+
+```nu
+$env.GOLEM_EFFECT_GOLEM_PATH = ($env.HOME | path join projects/golem/golem/sdks/effect)
+golem deploy -Y -E inference-recovery
+with-env {
+  GOLEM_TEST_ENV: "inference-recovery"
+  GOLEM_TEST_ORIGIN: "http://call-center-recovery.localhost:19006"
+  GOLEM_TEST_SCENARIO: "crash-openai,crash-inference,crash-both,crash-body,crash-helperbody,crash-bothbody"
+  GOLEM_TEST_ATTEMPTS: "3"
+} { node test/recovery-smoke.mjs }
+```
+
+`crash-openai` crashes the caller before HTTP headers; `crash-inference` crashes only the helper;
+`crash-both` crashes caller then helper sequentially. The three body scenarios do the same after
+the fixture emits a partial SSE response. All 18 inference crash attempts passed on rc2-68, as
+did 6 recognition/synthesis crash attempts, 3 continuation controls, 7 failure/interruption/slow-reader
+controls and 6 real-browser buffering scenarios. Checks require two distinct turns, expected text,
+nonempty audio with matching response IDs/completion, ACK submission and hangup/output closure.
+The unchanged direct-HTTP baseline still fails. See the plan for exact evidence and limitations.
+
+Open [the experimental console](http://call-center-recovery.localhost:19006) for fixture rehearsal.
+The local crash-button controller remains configured for the original live demo, not this domain.
+Remote inference may survive an interrupt/hangup, incur cost, and delay later requests queued on
+the same helper. Two-turn tests observed 3 HTTP requests after a caller or helper crash, 4 after
+both, versus 2 normally; exactly-once inference/billing is **not** promised. Real-provider crashes,
+full-server restart and repeated crashes within one ongoing call remain unverified.
+
 ## Protocol and limits
 
 `CallAgent(callId).run` exposes `input` and `output` Durable Stream slots under
