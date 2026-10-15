@@ -79,7 +79,8 @@ for (const scenario of selected) {
       const targets = targetStage === "both" || targetStage === "bothbody" ? ["CallAgent", "InferenceAgent"]
         : targetStage === "inference" || targetStage === "helperbody" ? ["InferenceAgent"] : ["CallAgent"];
       for (const target of targets) {
-        const { stdout, stderr } = await run("golem", ["agent", "simulate-crash", `${target}(${JSON.stringify(callId)})`, "-E", environment, "-Y"], {
+        const identity = `${target}(${JSON.stringify(callId)}${target === "InferenceAgent" ? ', "response-1"' : ""})`;
+        const { stdout, stderr } = await run("golem", ["agent", "simulate-crash", identity, "-E", environment, "-Y"], {
           env: { ...process.env, GOLEM_EFFECT_GOLEM_PATH: `${process.env.HOME}/projects/golem/golem/sdks/effect` }, timeout: 30000,
         });
         await writeFile(`${evidence}/crash-${target}.log`, stdout + stderr);

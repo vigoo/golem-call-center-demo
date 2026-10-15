@@ -8,8 +8,10 @@ See [`DEVELOPMENT_PLAN.md`](./DEVELOPMENT_PLAN.md) for the design and commit-by-
 and browser work locally. On CLI `v1.6.0-rc2-68-g3b7efa521e` with the rebuilt local SDK,
 post-crash controls, recognition recovery and synthesis recovery each pass three fixed attempts.
 [GOL-862](https://linear.app/golem-cloud/issue/GOL-862) is Done and its old stall was not reproduced.
-Whole-call crash acceptance remains pending: an unfinished HTTP POST interleaved with a
-WebSocket receive fails recovery ([GOL-906](https://linear.app/golem-cloud/issue/GOL-906)).
+Default-path whole-call crash acceptance remains pending: an unfinished HTTP POST interleaved
+with a WebSocket receive fails recovery ([GOL-906](https://linear.app/golem-cloud/issue/GOL-906)).
+The opt-in streaming inference-isolation experiment below passes its deterministic fixture crash
+matrix; changed inference prefixes on replay remain a separate, fatal limitation.
 Live recognition, LLM responses and audio playback were user-tested. Long-response buffering is
 also tested against protocol fixtures using real Chrome playback and Golem streams. Acoustic
 latency remains unmeasured. This is an unauthenticated development prototype, not a production
@@ -163,12 +165,14 @@ response, plus request rejection, pending/error feedback, hangup races and mobil
 ## Streaming inference recovery experiment
 
 The default path still streams OpenAI text in the call agent and can hit GOL-906. An opt-in
-`isolatedInference` mode isolates HTTP in a separate durable `InferenceAgent(callId)`, returning
+`isolatedInference` mode isolates HTTP in a separate durable `InferenceAgent(callId, responseId)`, returning
 text deltas and explicit completion/failure items through streaming durable RPC. Recognition and
 synthesis WebSockets remain in the call agent. Speech starts before inference completes, as in
 the original direct path. The helper's model/API endpoint config is independent of the caller's
-config. This replaces the earlier buffered experiment; use fresh call IDs, not existing agents
-whose histories contain the scalar RPC method. The saved call-state schema is unchanged.
+config. The coordinator supplies its existing stable response ID: replay uses the same helper,
+but a new response never queues behind an abandoned one. This replaces the earlier buffered and
+per-call streaming experiments; use fresh call IDs rather than updating their existing agents.
+The saved call-state schema is unchanged.
 
 The separate fixture-only deployment leaves the existing live demo unchanged. With the same
 isolated server and protocol fixture running:
@@ -185,18 +189,33 @@ with-env {
 ```
 
 `crash-openai` crashes the caller before HTTP headers; `crash-inference` crashes only the helper;
-`crash-both` crashes caller then helper sequentially. The three body scenarios do the same after
+`crash-both` crashes caller then the original response-1 helper sequentially. Caller recovery may
+already have started a replacement helper; this is not a simultaneous crash or a crash of that
+replacement. The three body scenarios do the same after
 the first delta has reached synthesis and browser-facing audio while the provider is still held.
-One fresh preflight per crash scenario and a two-turn control passed on rc2-68. Checks require
+All18 fresh crash attempts passed on rc2-68 with per-response inference isolation. Checks require
 two distinct turns, expected text, nonempty audio with matching response IDs/completion, ACK
-submission and hangup/output closure. Broader streaming acceptance is still being tested.
-The earlier 18-attempt matrix belongs to the buffered implementation, not this streaming
-implementation. See the plan for separate evidence and limitations.
+submission and hangup/output closure. `node test/inference-streaming.mjs` additionally checks early
+audio, continuation after interrupt and hangup with HTTP still held (five cases, all passed).
+The buffered and per-call streaming experiments have separate historical results in the plan.
+
+Two explicit acceptance probes remain **failing**:
+
+```nu
+with-env { GOLEM_TEST_SCENARIO: "conflict-text,conflict-chunks" } { node test/inference-streaming.mjs }
+```
+
+These change the replayed prefix or its chunk segmentation after speech has begun. Golem rejects
+the conflicting publication with EventConflict rather than splicing output. Its fatal remote
+stream terminal also traps the consuming call, so the application cannot clear playback and
+continue that same call through an Effect error handler. This is not transparent recovery of
+arbitrary nondeterministic inference; a catchable remote-terminal contract needs discussion.
 
 Open [the experimental console](http://call-center-recovery.localhost:19006) for fixture rehearsal.
 The local crash-button controller remains configured for the original live demo, not this domain.
-Remote inference may survive an interrupt/hangup, incur cost, and delay later requests queued on
-the same helper; cancellation is cooperative. Exactly-once inference/billing is **not** promised.
+Remote inference may survive an interrupt/hangup and incur cost; cancellation is cooperative.
+Helpers and their histories are retained per response, with no automatic deletion policy yet.
+Exactly-once inference/billing is **not** promised.
 Recovery of already published deltas requires a compatible event prefix: changing text or chunk
 segmentation on HTTP retry may conflict with durable stream history. Do not splice a regenerated
 suffix onto exposed speech. Real-provider crashes, full-server restart and repeated crashes within

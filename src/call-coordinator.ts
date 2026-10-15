@@ -390,7 +390,7 @@ export const coordinateCall = <E>(
         let text = "";
         let completed = false;
         const generated = yield* (started.completeText === undefined
-          ? generator.stream(options.systemPrompt, started.turns)
+          ? generator.stream(options.systemPrompt, started.turns, responseId)
           : Stream.make({ _tag: "TextDelta" as const, text: started.completeText }, { _tag: "Completed" as const }))
           .pipe(
             Stream.mapError(

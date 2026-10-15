@@ -29,6 +29,7 @@ for (const scenario of selected) {
   await mkdir(evidence, { recursive: true });
   await writeFile(`${evidence}/metadata.json`, JSON.stringify({ callId, scenario, environment, origin, startedAt: new Date().toISOString() }, null, 2));
   const base = `${origin}/calls/${callId}/run/invocations/${randomUUID()}`;
+  const helperIdentity = (responseId) => `InferenceAgent(${JSON.stringify(callId)}, ${JSON.stringify(responseId)})`;
   const events = [];
   let offset = "-1", sequence = 0, closed = false, outcome = "failed";
   const request = async (path, options = {}) => {
@@ -84,7 +85,7 @@ for (const scenario of selected) {
         await waitFor(() => events.includes("interruptConfirmed"), "Interrupt was not confirmed");
         assert.ok(!closed && events.some((event) => event.clearPlayback));
       } else if (conflict) {
-        const { stdout, stderr } = await run("golem", ["agent", "simulate-crash", `InferenceAgent(${JSON.stringify(callId)})`, "-E", environment, "-Y"], {
+        const { stdout, stderr } = await run("golem", ["agent", "simulate-crash", helperIdentity("response-1"), "-E", environment, "-Y"], {
           env: { ...process.env, GOLEM_EFFECT_GOLEM_PATH: `${process.env.HOME}/projects/golem/golem/sdks/effect` }, timeout: 30000,
         });
         await writeFile(`${evidence}/crash.log`, stdout + stderr);
@@ -111,12 +112,15 @@ for (const scenario of selected) {
       const finished = continued.find((event) => event.responseFinished)?.responseFinished.responseId;
       assert.ok(finished && finished !== obsolete);
       assert.ok(continued.some((event) => event.transcript?.final && event.transcript.turnId !== firstTurn && event.transcript.text === "Second fixture turn"));
-      assert.ok(continued.some((event) => event.assistantText?.responseId === finished && event.assistantText.text === "Hello from the fixture."));
+      const expected = scenario === "conflict-text" ? "Different replacement answer." : "Hello from the fixture.";
+      assert.ok(continued.some((event) => event.assistantText?.responseId === finished && event.assistantText.text === expected));
       const lastAudio = continued.filter((event) => event.audio?.responseId === finished).at(-1)?.audio;
       assert.ok(lastAudio && Buffer.from(lastAudio.payload, "base64").length > 0);
-      assert.ok(!continued.some((event) => event.failure || (obsolete && (event.audio?.responseId === obsolete || event.responseFinished?.responseId === obsolete))));
       await append([{ playbackAck: { responseId: finished, playedThrough: lastAudio.sequence } }, "hangup"], true);
       await waitFor(() => closed, "Hangup did not close output");
+      assert.ok(!events.slice(boundary).some((event) => event.failure || (obsolete && (
+        event.audio?.responseId === obsolete || event.assistantText?.responseId === obsolete || event.responseFinished?.responseId === obsolete
+      ))), "Obsolete generation emitted late output during continuation or final drain");
       assert.equal(events.filter((event) => event.responseFinished).length, scenario === "prefix" ? 2 : 1);
       assert.equal(events.filter((event) => event.failure).length, conflict ? 1 : 0);
     }
@@ -126,7 +130,8 @@ for (const scenario of selected) {
     failures.push(callId); console.error(`${scenario}: FAILED ${error.message}; ${callId}`);
     await writeFile(`${evidence}/error.txt`, error.stack ?? String(error));
   } finally {
-    await writeFile(`${evidence}/provider.json`, JSON.stringify(await control(), null, 2));
+    const provider = await control();
+    await writeFile(`${evidence}/provider.json`, JSON.stringify(provider, null, 2));
     if (!closed) {
       try {
         await append(["hangup"], true);
@@ -142,15 +147,17 @@ for (const scenario of selected) {
     // before reset: destroying its held HTTP response can otherwise retry into the next test.
     await control({ release: true });
     const cleanupDeadline = Date.now() + 15000;
-    while (true) {
-      const { stdout } = await run("golem", ["agent", "get", `InferenceAgent(${JSON.stringify(callId)})`, "-E", environment, "-F", "json"], {
-        env: { ...process.env, GOLEM_EFFECT_GOLEM_PATH: `${process.env.HOME}/projects/golem/golem/sdks/effect` }, timeout: 10000,
-      });
-      const metadata = JSON.parse(stdout).metadata;
-      await writeFile(`${evidence}/helper-cleanup.json`, JSON.stringify(metadata, null, 2));
-      if (["Idle", "Failed", "Interrupted", "Exited"].includes(metadata.status) && metadata.pendingInvocationCount === 0) break;
-      assert.ok(Date.now() < cleanupDeadline, "Abandoned helper did not settle after cleanup release");
-      await pause(100);
+    for (const responseId of new Set(provider.journal.filter((entry) => entry.operation === "initialize").map((entry) => entry.responseId))) {
+      while (true) {
+        const { stdout } = await run("golem", ["agent", "get", helperIdentity(responseId), "-E", environment, "-F", "json"], {
+          env: { ...process.env, GOLEM_EFFECT_GOLEM_PATH: `${process.env.HOME}/projects/golem/golem/sdks/effect` }, timeout: 10000,
+        });
+        const metadata = JSON.parse(stdout).metadata;
+        await writeFile(`${evidence}/helper-cleanup-${responseId}.json`, JSON.stringify(metadata, null, 2));
+        if (["Idle", "Failed", "Interrupted", "Exited"].includes(metadata.status) && metadata.pendingInvocationCount === 0) break;
+        assert.ok(Date.now() < cleanupDeadline, "Abandoned helper did not settle after cleanup release");
+        await pause(100);
+      }
     }
     await control({});
   }

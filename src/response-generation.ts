@@ -2,7 +2,7 @@ import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai";
 import { Context, Effect, Layer, type Redacted, Schema, Stream } from "effect";
 import { AiError, LanguageModel, Prompt, type Response } from "effect/ai";
 import { FetchHttpClient } from "effect/http";
-import type { ConversationTurn } from "./call-protocol.js";
+import type { ConversationTurn, ResponseId } from "./call-protocol.js";
 
 export const ResponseGenerationEvent = Schema.Union([
   Schema.TaggedStruct("TextDelta", { text: Schema.String }),
@@ -55,6 +55,7 @@ export class ResponseGenerator extends Context.Service<
     readonly stream: (
       systemPrompt: string,
       turns: ReadonlyArray<ConversationTurn>,
+      responseId: ResponseId,
     ) => Stream.Stream<ResponseGenerationEvent, AiError.AiError>;
   }
 >()("call-center/ResponseGenerator") {

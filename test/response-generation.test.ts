@@ -1,12 +1,13 @@
 import { describe, expect, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer, Stream } from "effect";
 import { AiError, LanguageModel, type Prompt } from "effect/ai";
-import type { ConversationTurn } from "../src/call-protocol.js";
+import type { ConversationTurn, ResponseId } from "../src/call-protocol.js";
 import {
   ResponseGenerator,
   type ResponseGenerationEvent,
 } from "../src/response-generation.js";
 
+const responseId = "response-test" as ResponseId;
 const turns: ReadonlyArray<ConversationTurn> = [
   {
     turnId: "turn-3" as ConversationTurn["turnId"],
@@ -56,7 +57,7 @@ describe("response generation", () => {
       yield* provideGenerator(
         Stream.unwrap(
           Effect.map(ResponseGenerator, (generator) =>
-            generator.stream("Keep answers concise", turns),
+            generator.stream("Keep answers concise", turns, responseId),
           ),
         ),
         model,
@@ -100,7 +101,7 @@ describe("response generation", () => {
 
       const events = yield* provideGenerator(
         Stream.unwrap(
-          Effect.map(ResponseGenerator, (generator) => generator.stream("system", turns)),
+          Effect.map(ResponseGenerator, (generator) => generator.stream("system", turns, responseId)),
         ),
         model,
       ).pipe(Stream.runCollect);
@@ -128,7 +129,7 @@ describe("response generation", () => {
 
       const result = yield* provideGenerator(
         Stream.unwrap(
-          Effect.map(ResponseGenerator, (generator) => generator.stream("system", turns)),
+          Effect.map(ResponseGenerator, (generator) => generator.stream("system", turns, responseId)),
         ),
         model,
       ).pipe(Stream.runCollect, Effect.result);
@@ -150,7 +151,7 @@ describe("response generation", () => {
 
       const result = yield* provideGenerator(
         Stream.unwrap(
-          Effect.map(ResponseGenerator, (generator) => generator.stream("system", turns)),
+          Effect.map(ResponseGenerator, (generator) => generator.stream("system", turns, responseId)),
         ),
         model,
       ).pipe(
@@ -178,7 +179,7 @@ describe("response generation", () => {
 
       const result = yield* provideGenerator(
         Stream.unwrap(
-          Effect.map(ResponseGenerator, (generator) => generator.stream("system", turns)),
+          Effect.map(ResponseGenerator, (generator) => generator.stream("system", turns, responseId)),
         ),
         model,
       ).pipe(
@@ -208,7 +209,7 @@ describe("response generation", () => {
 
       const result = yield* provideGenerator(
         Stream.unwrap(
-          Effect.map(ResponseGenerator, (generator) => generator.stream("system", turns)),
+          Effect.map(ResponseGenerator, (generator) => generator.stream("system", turns, responseId)),
         ),
         model,
       ).pipe(
@@ -231,7 +232,7 @@ describe("response generation", () => {
 
       yield* provideGenerator(
         Stream.unwrap(
-          Effect.map(ResponseGenerator, (generator) => generator.stream("system", turns)),
+          Effect.map(ResponseGenerator, (generator) => generator.stream("system", turns, responseId)),
         ),
         model,
       ).pipe(
@@ -255,7 +256,7 @@ describe("response generation", () => {
       );
       const drain = provideGenerator(
         Stream.unwrap(
-          Effect.map(ResponseGenerator, (generator) => generator.stream("system", turns)),
+          Effect.map(ResponseGenerator, (generator) => generator.stream("system", turns, responseId)),
         ),
         model,
       ).pipe(Stream.runDrain);

@@ -1,7 +1,7 @@
 import { defineAgent, defineConfig, method, WitTypes } from "@golemcloud/effect-golem";
 import { Context, Effect, Layer, Schema, Scope, Stream } from "effect";
 import { AiError } from "effect/ai";
-import { CallId, ConversationTurn } from "./call-protocol.js";
+import { CallId, ConversationTurn, ResponseId } from "./call-protocol.js";
 import { openAiLanguageModelLayer, ResponseGenerationEvent, ResponseGenerator } from "./response-generation.js";
 
 // Agent streams need an explicit application-error item, not a successful EOF.
@@ -18,11 +18,11 @@ const InferenceAgentConfig = defineConfig("InferenceAgent.Config", {
   }),
 });
 
-// One sequential durable inference owner per call, with no sibling WebSocket writes.
+// One durable owner per response: obsolete HTTP cannot block the next response.
 export const InferenceAgent = defineAgent({
   name: "InferenceAgent",
   mode: "durable",
-  id: { callId: CallId },
+  id: { callId: CallId, responseId: ResponseId },
   config: InferenceAgentConfig,
   methods: {
     generate: method({
@@ -32,8 +32,8 @@ export const InferenceAgent = defineAgent({
     }),
   },
 }).implement({
-  init: () => Effect.void,
-  methods: () => ({
+  init: ({ responseId }) => Effect.succeed(responseId),
+  methods: (responseId) => ({
     generate: ({ systemPrompt, turns }) => Effect.gen(function* () {
       const config = yield* InferenceAgentConfig;
       const providers = ResponseGenerator.layer.pipe(Layer.provide(openAiLanguageModelLayer({
@@ -41,7 +41,7 @@ export const InferenceAgent = defineAgent({
         apiUrl: yield* config.openAi.apiUrl,
         model: yield* config.openAi.model,
       })));
-      return Stream.unwrap(Effect.map(ResponseGenerator, (generator) => generator.stream(systemPrompt, turns))).pipe(
+      return Stream.unwrap(Effect.map(ResponseGenerator, (generator) => generator.stream(systemPrompt, turns, responseId))).pipe(
         Stream.provide(providers),
         Stream.catch(() => Stream.make({ _tag: "Failed" as const })),
       );
@@ -53,8 +53,8 @@ export const makeIsolatedInferenceLayer = (callId: typeof CallId.Type) => Effect
   // Do not retain the handler scope; each stream owns its RPC resources.
   const context = (yield* Effect.context<Exclude<Effect.Services<ReturnType<typeof InferenceAgent.client.get>>, Scope.Scope>>()).pipe(Context.omit(Scope.Scope));
   return Layer.succeed(ResponseGenerator, ResponseGenerator.of({
-    stream: (systemPrompt, turns) => Stream.unwrap(Effect.gen(function* () {
-      const remote = yield* InferenceAgent.client.get({ callId });
+    stream: (systemPrompt, turns, responseId) => Stream.unwrap(Effect.gen(function* () {
+      const remote = yield* InferenceAgent.client.get({ callId, responseId });
       const output = yield* remote.generate({ systemPrompt, turns });
       return output.pipe(Stream.mapEffect((event) => event._tag === "Failed"
         ? Effect.fail({ reason: "Language model generation failed" })

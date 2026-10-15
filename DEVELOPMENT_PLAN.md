@@ -1179,3 +1179,44 @@ contract decision, discuss it with the user before filing a feature request.
 
 The conflict probes remain explicit failing acceptance scenarios, not silently green controls.
 They and their retained journals are the reproducer. No runtime implementation was changed.
+
+### Per-response streaming isolation — implementation and verification, 2026-10-15
+
+Changed the durable helper identity to (callId, responseId). ResponseGenerator.stream now requires
+the coordinator's existing response ID; no new counter or generated identity is introduced. Replay
+of the same response selects the same helper; accepted turns and synthesis replacement responses
+select independent helpers. The direct OpenAI implementation ignores this additional argument.
+No caller snapshot schema change, cancellation workaround, idempotence override or runtime edit.
+Helpers/history remain per response; automatic deletion and exactly-once billing are not promised.
+
+Deployed fresh identities only to inference-recovery revision3 on the same isolated rc2-68 server.
+All18 header/body crash cases passed again with this identity (three fixed fresh attempts each).
+Both combined-crash scenarios crash the caller then the original response-1 helper, which may no
+longer be the active replacement helper; they do not demonstrate simultaneous crashes. The five
+stream-contract cases now pass: early audio, cancellation before headers/after prefix followed by
+a new completed turn without releasing obsolete HTTP, and hangup before headers/after prefix
+without release. Repeated those five after strengthening stale text/audio/completion checks through
+final drain; all passed. First-response synthesis journals again contain exactly the expected text.
+
+Ten control cases pass (continuation, slow reader, three provider failures, three interruptions,
+recognition/synthesis crash), plus six real Chrome buffering/playback cases. Deployed the same code
+with isolatedInference=false to integration revision4 and completed a fresh two-turn direct call.
+The live-provider deployment/controller is unchanged. Typecheck and all99 unit tests pass.
+
+Evidence logs: `.amp/in/streaming-response-isolation-{deploy,contract,final-contract,crashes,
+controls,browser,direct-deploy,direct-control}.log`; retained per-call runs; aggregate38 passing
+fixture outcomes in `.amp/in/artifacts/streaming-response-isolation-results.json` (18 crashes,
+10 controls and two batches of5 contract cases). The six browser cases and direct-mode control
+are separate from that aggregate. The earlier per-call helper results remain separate above.
+
+Explicitly reran the two persistent divergence probes on the final per-response implementation:
+both still fail desired containment, with no mixed completed response, in
+`.amp/in/streaming-response-isolation-conflicts.log`. Producer EventConflict remains fatal to the
+consumer. This is an intentional existing P3 error-context boundary, not solved by response-key
+isolation. Do not present arbitrary real-provider crash recovery as accepted or suppress the failed
+probes. A catchable remote-terminal option/contract is a discussion item, not an opened feature.
+
+Oracle reviewed the completed step and inspected the logs/journals, approved it with no blockers
+within this fixture-experiment scope, and requested the combined-crash wording clarification.
+Applied that clarification and its optional final-drain stale-output check. The bounded independent
+bug-finding pass found no application bugs. No server reset, live/cloud deployment or push.
