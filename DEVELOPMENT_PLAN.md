@@ -1253,3 +1253,13 @@ stream is also not a verified fiber-safe substitute.
 Choose the provider/storage/latency trade-off versus runtime-policy scope with the user before
 implementation. Keep the deterministic crash matrix and explicit failing divergence probes as
 baseline evidence. No implementation change or feature ticket was made during this consultation.
+
+### Scope clarification — 2026-10-15
+
+Build and test the call-center application on the planned Golem release, using the matching
+local Effect SDK. Report runtime defects; do not modify Golem to make application tests pass.
+The runtime option above was misunderstood as authorization to change Golem. The resulting
+uncommitted experiment is isolated in `/Users/vigoo/projects/golem/golem-http-prefix-recovery`
+and is not part of this application's implementation or release validation. Its passing tests
+do not establish recovery support in the planned release. Continue with application-level
+recovery mechanisms supported by that release, and explicitly report remaining runtime blockers.

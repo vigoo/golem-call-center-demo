@@ -25,6 +25,18 @@ try {
     }
     await route.continue();
   });
+  // Exercise noisy interim updates without changing the fixture's committed turns.
+  await page.route("**/streams/output?*", async (route) => {
+    const response = await route.fetch();
+    const events = await response.json();
+    const final = events.find((event) => event.transcript?.final)?.transcript;
+    if (final) {
+      events.unshift(...["", "Hello", "Hello", ""].map((text) => ({
+        transcript: { turnId: final.turnId, text, final: false },
+      })));
+    }
+    await route.fulfill({ response, json: events });
+  });
   await page.goto(origin);
   await page.getByRole("button", { name: "Start call" }).click();
   await page.waitForFunction(() => document.getElementById("status").textContent === "Listening", { timeout: 20000 });
@@ -33,6 +45,9 @@ try {
   assert.ok(retried, "uncertain append was not retried");
   await page.waitForFunction(() => document.getElementById("events").textContent.includes("Played ·"));
   await page.waitForFunction(() => document.getElementById("transcripts").textContent.includes("Assistant ·"));
+  assert.ok((await page.locator("#events").textContent()).includes("Transcript committed ·"));
+  assert.equal(await page.locator("#events li").filter({ hasText: /transcript$/ }).count(), 0,
+    "Interim transcript updates flooded the pipeline log");
   for (let attempt = 0; !acknowledged && attempt < 50; attempt++) await page.waitForTimeout(100);
   assert.ok(acknowledged, "No playback acknowledgement was accepted by Golem");
   const duration = Number(process.env.GOLEM_TEST_DURATION_MS ?? 0);

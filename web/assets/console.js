@@ -65,7 +65,10 @@ async function output(call, event, fast = false) {
       const turn = document.createElement("p"); turn.className = "turn";
       const label = document.createElement("span"); label.textContent = `You · ${value.turnId}`;
       turn.append(label, document.createTextNode(value.text)); $("transcripts").append(turn);
-    } else $("partial").textContent = value.text;
+    } else {
+      $("partial").textContent = value.text;
+      return;
+    }
   }
   if (kind === "assistantText") {
     const turn = document.createElement("p"); turn.className = "turn";
@@ -93,7 +96,8 @@ async function output(call, event, fast = false) {
     status("Listening", "Agent confirmed interrupt; ready for your next turn.");
   }
   if (kind === "failure") log(`${value.stage}: ${value.reason} (${value.recoverable ? "recoverable" : "fatal"})`);
-  log(`${kind}${value.responseId ? ` · ${value.responseId}` : ""}${kind === "audio" ? ` · chunk ${value.sequence}` : ""}`);
+  if (kind === "transcript") log(`Transcript committed · ${value.turnId}`);
+  else log(`${kind}${value.responseId ? ` · ${value.responseId}` : ""}${kind === "audio" ? ` · chunk ${value.sequence}` : ""}`);
   if (kind === "failure" && !value.recoverable) throw new Error(`${value.stage}: ${value.reason}`);
 }
 

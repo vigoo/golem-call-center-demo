@@ -4,14 +4,15 @@ A durable Effect Golem call agent: Deepgram Flux → Effect AI / OpenAI Response
 streaming TTS. A static-only ephemeral Golem HTTP router hosts the same-origin browser console.
 See [`DEVELOPMENT_PLAN.md`](./DEVELOPMENT_PLAN.md) for the design and commit-by-commit history.
 
-**Status:** provider-aware reconstruction is implemented and unit-tested; the fixture pipeline
-and browser work locally. On CLI `v1.6.0-rc2-68-g3b7efa521e` with the rebuilt local SDK,
-post-crash controls, recognition recovery and synthesis recovery each pass three fixed attempts.
-[GOL-862](https://linear.app/golem-cloud/issue/GOL-862) is Done and its old stall was not reproduced.
-Default-path whole-call crash acceptance remains pending: an unfinished HTTP POST interleaved
-with a WebSocket receive fails recovery ([GOL-906](https://linear.app/golem-cloud/issue/GOL-906)).
+**Status:** rebuilt and tested on CLI/server `1.6.0-rc4` with the published Effect SDK
+`2.0.0-rc4`. All 99 unit tests, typecheck, the fixture pipeline and a 30-second Chrome call pass.
+Default-path continuation, post-crash controls, recognition, OpenAI and synthesis recovery each
+pass three fixed fresh-agent attempts. The previous
+[GOL-906](https://linear.app/golem-cloud/issue/GOL-906) OpenAI crash failure is not reproduced
+in this rc4 fixture batch; this does not establish arbitrary live-provider crash recovery.
 The opt-in streaming inference-isolation experiment below passes its deterministic fixture crash
-matrix; changed inference prefixes on replay remain a separate, fatal limitation.
+matrix. Changed inference prefixes are rejected as recoverable generation failures in the rc4
+fixture probes; the same call can continue with a new turn.
 Live recognition, LLM responses and audio playback were user-tested. Long-response buffering is
 also tested against protocol fixtures using real Chrome playback and Golem streams. Acoustic
 latency remains unmeasured. This is an unauthenticated development prototype, not a production
@@ -34,22 +35,22 @@ implemented application logic from pending crash/live-provider acceptance. These
 require the browser and Golem to run on the same machine. The earlier Amp portal is a static
 copy of the older walkthrough, not an automatically updated deployment.
 Its GOL-862 acceptance labels, and those in the deployed walkthrough, predate the latest runtime
-verification; use this README and the plan's 2026-10-15 checkpoint for current acceptance status.
+verification; use this README for the rc4 results and the plan for historical acceptance status.
 The walkthrough is a static interactive explanation with representative protocol excerpts—not
 live telemetry. It requires no microphone or provider credentials. Run `node test/browser-walkthrough.mjs`
 against the integration deployment to check navigation, examples, CSP, mobile layout and no call requests.
 
 ## Prerequisites and isolated server
 
-- Node.js 22.12 or newer, Golem CLI 1.6, and Google Chrome for browser tests.
-- Golem checkout at `../../golem`, with its Effect SDK built at `../../golem/sdks/effect`.
-- Exact Effect/OpenAI 4.0.0 dependencies; the SDK dependency is a local `file:` link.
+- Node.js 22.12 or newer, Golem CLI `1.6.0-rc4`, and Google Chrome for browser tests.
+- Published Effect SDK `2.0.0-rc4` and exact Effect/OpenAI `4.0.0` dependencies.
 
-Commands below are Nushell, from this repository root. Set the override in **each terminal** that
-runs Golem so the CLI and npm resolve the same SDK:
+Commands below are Nushell, from this repository root. Remove any old local-SDK override in
+each terminal so the CLI uses the same published SDK as npm. The previous locally built SDK
+WASM cannot instantiate on rc4 because it imports the removed `get-oplog-index` host function.
 
 ```nu
-$env.GOLEM_EFFECT_GOLEM_PATH = ($env.HOME | path join projects/golem/golem/sdks/effect)
+hide-env --ignore-errors GOLEM_EFFECT_GOLEM_PATH
 npm install
 npm test
 npm run typecheck
@@ -61,7 +62,12 @@ golem server run
 memory override, and `.amp/in/local-golem/data-current`. Readiness is recorded in
 `.amp/in/local-golem/ports.json`. These are independent of default Golem ports and data. The memory
 override is not a hard RSS limit. Do not start a second server on these ports or clean its data.
-HTTP/MCP listeners bind all interfaces; use a trusted development machine/network.
+The rc4 server binds listeners to loopback by default.
+
+The 2026-10-19 rc4 verification uses the same ports but preserves earlier data by overriding
+the data directory to `.amp/in/rc4/data` and the ports file to `.amp/in/rc4/ports.json`.
+Build, deployment and test logs are in `.amp/in/rc4/`; per-call recovery evidence remains in
+`.amp/in/recovery-runs/` and `.amp/in/streaming-contract-runs/`.
 
 Before writing test artifacts, ensure `/.amp/in/` is in this repository's local Git exclude file
 (locate it with `git rev-parse --git-path info/exclude`); it is already configured in this checkout.
@@ -77,7 +83,7 @@ node test/provider-fixture.mjs
 With the server and fixture running:
 
 ```nu
-$env.GOLEM_EFFECT_GOLEM_PATH = ($env.HOME | path join projects/golem/golem/sdks/effect)
+hide-env --ignore-errors GOLEM_EFFECT_GOLEM_PATH
 golem deploy -Y -E integration -P mock
 node test/golem-smoke.mjs
 node test/browser-smoke.mjs
@@ -100,7 +106,7 @@ Configure your ElevenLabs voice/model and other non-secret settings under `agent
 in `golem.yaml`, then:
 
 ```nu
-$env.GOLEM_EFFECT_GOLEM_PATH = ($env.HOME | path join projects/golem/golem/sdks/effect)
+hide-env --ignore-errors GOLEM_EFFECT_GOLEM_PATH
 golem deploy -Y -E local -P live
 ```
 
@@ -115,9 +121,17 @@ secret-management commands if credentials already exist. Nothing here requires c
 Use headphones to limit feedback. `*.localhost` is a browser secure context; remote hosting needs
 HTTPS and appropriate authentication before exposing transcripts or audio.
 
-Defaults: Flux `flux-general-en`, OpenAI `gpt-4o-mini`, ElevenLabs `eleven_flash_v2_5` with
-`pcm_16000`. Microphone frames are mono PCM16 little-endian, 16 kHz, approximately 80 ms.
+Defaults: Flux `flux-general-en`, OpenAI `gpt-6.1-sol` with low reasoning effort, ElevenLabs
+`eleven_flash_v2_5` with `pcm_16000`. Microphone frames are mono PCM16 little-endian, 16 kHz, approximately 80 ms.
 Resampling/low-pass filtering happens in the browser; the agent does no transcoding.
+
+The assistant knows the demo's design through its system prompt. For detailed questions it can
+call `read_walkthrough`, which reads the entire read-only provisioned copy of
+`web/assets/walkthrough-data.js` (the same source used by the walkthrough page). Both direct and
+isolated inference support it. Each reply allows one tool round followed by a streamed answer;
+ordinary conversation need not load the document. Historical model examples and acceptance labels
+in the walkthrough are not current deployment facts or live telemetry. Start a fresh call after
+deploying prompt/tool changes so it uses the new revision.
 
 The default voice is George (`JBFqnCBsd6RMkjVDRZzb`), verified with the current free-plan key.
 The previous Rachel ID returned HTTP 402 `paid_plan_required`: free users cannot use library
@@ -148,7 +162,8 @@ Start a call and click **Crash agent** while keeping the page open. This invokes
 while a request is pending and never automatically retries. Command completion is not proof
 of recovery: continue speaking and check for another audible answer on the same call.
 Speech may repeat. Recognition and synthesis crash scenarios pass fixture tests, but arbitrary
-click timing can still hit GOL-906 during an OpenAI request. Start a fresh call if recovery fails.
+live-provider crash timing remains unverified. The rc4 fixture tests also pass OpenAI crashes
+and the browser crash button. Start a fresh call if recovery fails.
 Real-provider crash compatibility and whole-server restart are not verified.
 
 For deterministic rehearsal, with the integration deployment and fixture running, use instead:
@@ -164,7 +179,7 @@ response, plus request rejection, pending/error feedback, hangup races and mobil
 
 ## Streaming inference recovery experiment
 
-The default path still streams OpenAI text in the call agent and can hit GOL-906. An opt-in
+The default path streams OpenAI text in the call agent; its GOL-906 fixture probe passes on rc4. An opt-in
 `isolatedInference` mode isolates HTTP in a separate durable `InferenceAgent(callId, responseId)`, returning
 text deltas and explicit completion/failure items through streaming durable RPC. Recognition and
 synthesis WebSockets remain in the call agent. Speech starts before inference completes, as in
@@ -178,7 +193,7 @@ The separate fixture-only deployment leaves the existing live demo unchanged. Wi
 isolated server and protocol fixture running:
 
 ```nu
-$env.GOLEM_EFFECT_GOLEM_PATH = ($env.HOME | path join projects/golem/golem/sdks/effect)
+hide-env --ignore-errors GOLEM_EFFECT_GOLEM_PATH
 golem deploy -Y -E inference-recovery
 with-env {
   GOLEM_TEST_ENV: "inference-recovery"
@@ -193,23 +208,24 @@ with-env {
 already have started a replacement helper; this is not a simultaneous crash or a crash of that
 replacement. The three body scenarios do the same after
 the first delta has reached synthesis and browser-facing audio while the provider is still held.
-All18 fresh crash attempts passed on rc2-68 with per-response inference isolation. Checks require
+All 18 fresh crash attempts passed on rc4 with per-response inference isolation. Checks require
 two distinct turns, expected text, nonempty audio with matching response IDs/completion, ACK
 submission and hangup/output closure. `node test/inference-streaming.mjs` additionally checks early
 audio, continuation after interrupt and hangup with HTTP still held (five cases, all passed).
 The buffered and per-call streaming experiments have separate historical results in the plan.
 
-Two explicit acceptance probes remain **failing**:
+Two explicit replay-divergence acceptance probes also **pass on rc4** (one fresh call each):
 
 ```nu
 with-env { GOLEM_TEST_SCENARIO: "conflict-text,conflict-chunks" } { node test/inference-streaming.mjs }
 ```
 
 These change the replayed prefix or its chunk segmentation after speech has begun. Golem rejects
-the conflicting publication with EventConflict rather than splicing output. Its fatal remote
-stream terminal also traps the consuming call, so the application cannot clear playback and
-continue that same call through an Effect error handler. This is not transparent recovery of
-arbitrary nondeterministic inference; a catchable remote-terminal contract needs discussion.
+the conflicting publication rather than splicing output. The application receives a recoverable
+OpenAI-stage failure, clears playback, does not commit the conflicting answer, and completes a
+distinct second turn with audio, acknowledgement and hangup/output closure. On the earlier rc2-68
+runtime these probes trapped the consuming call instead. This is safe abandonment and continuation,
+not transparent recovery of arbitrary nondeterministic inference or exactly-once hearing.
 
 Open [the experimental console](http://call-center-recovery.localhost:19006) for fixture rehearsal.
 The local crash-button controller remains configured for the original live demo, not this domain.
@@ -279,7 +295,7 @@ Select a scenario with `with-env { GOLEM_TEST_SCENARIO: "interrupt-openai" } { n
 Use a fixed `GOLEM_TEST_ATTEMPTS` from 1–3, never retry until green. Comma-separated scenario names
 are accepted. `continue-call` is the non-crash control for two distinct answers, ACKs and closure.
 
-Latest verification on `v1.6.0-rc2-68-g3b7efa521e`: typecheck and 99 unit tests pass. The
+Historical verification on `v1.6.0-rc2-68-g3b7efa521e`: typecheck and 99 unit tests pass. The
 fixed batch passes `continue-call`, `replay-stt`, `crash-stt` and `crash-elevenlabs` three times
 each, with strict two-turn/ACK/closure assertions for the continuing calls. All seven slow-reader,
 provider-failure and interruption controls pass. All three `crash-openai` attempts fail with

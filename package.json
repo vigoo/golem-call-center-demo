@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "@effect/ai-openai": "4.0.0",
-    "@golemcloud/effect-golem": "file:../../golem/sdks/effect",
+    "@golemcloud/effect-golem": "2.0.0-rc4",
     "effect": "4.0.0"
   },
   "devDependencies": {
